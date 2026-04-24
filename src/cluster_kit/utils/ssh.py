@@ -109,5 +109,7 @@ class ClusterConnection:
         )
 
 
-# Backward compatibility: SSH_HOST constant
-SSH_HOST: str = get_cluster_host()
+def __getattr__(name: str):
+    if name == "SSH_HOST":
+        return get_cluster_host()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
