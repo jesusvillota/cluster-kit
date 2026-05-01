@@ -59,7 +59,9 @@ class QueueTable(Widget):
     def on_mount(self) -> None:
         self._set_placeholder()
 
-    def refresh_data(self, jobs: list[JobInfo]) -> None:
+    def refresh_data(
+        self, jobs: list[JobInfo], current_user: str = ""
+    ) -> None:
         """Clear and repopulate the table with fresh job data."""
         table = self.query_one(DataTable)
         table.clear(columns=False)
@@ -71,10 +73,12 @@ class QueueTable(Widget):
 
         for job in jobs:
             state_color = color_for_state(job.state)
+            is_current_user = job.user == current_user
+            user_style = "bold bright_green" if is_current_user else "dim magenta"
             row: tuple[Text | str, ...] = (
                 job.job_id,
                 job.name,
-                job.user,
+                Text(job.user, style=user_style),
                 job.partition,
                 Text(job.state, style=state_color),
                 job.time,

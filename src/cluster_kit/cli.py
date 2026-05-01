@@ -321,7 +321,7 @@ def _build_tui_parser(subparsers: argparse._SubParsersAction) -> None:
     tui_parser.add_argument(
         "--all-users",
         action="store_true",
-        default=False,
+        default=True,
         help="Show jobs for all cluster users",
     )
     tui_parser.set_defaults(func=_cmd_tui)

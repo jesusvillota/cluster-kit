@@ -65,7 +65,9 @@ class PhoneQueueSelector(Widget):
     def on_mount(self) -> None:
         self.query_one("#phone-queue-empty", Static).display = False
 
-    def refresh_data(self, jobs: list[JobInfo]) -> None:
+    def refresh_data(
+        self, jobs: list[JobInfo], current_user: str = ""
+    ) -> None:
         self._loading = False
         self._jobs = list(jobs)
         self._jobs_by_id = {job.job_id: job for job in self._jobs}
@@ -82,7 +84,9 @@ class PhoneQueueSelector(Widget):
             return
 
         self._hide_empty_state()
-        option_list.add_options([self._render_job(job) for job in self._jobs])
+        option_list.add_options(
+            [self._render_job(job, current_user) for job in self._jobs]
+        )
 
         if self._selected_job_id not in self._jobs_by_id:
             self._selected_job_id = self._jobs[0].job_id
@@ -152,16 +156,19 @@ class PhoneQueueSelector(Widget):
         return Text(message, style="dim", no_wrap=True)
 
     @staticmethod
-    def _render_job(job: JobInfo) -> Group:
+    def _render_job(job: JobInfo, current_user: str = "") -> Group:
         title = Text()
         title.append(job.job_id, style="bold cyan")
         title.append("  ")
         title.append(job.name or "Unnamed job", style="bold")
 
+        is_current_user = job.user == current_user
+        user_style = "bold bright_green" if is_current_user else "dim magenta"
+
         summary = Text(style="dim")
         summary.append(job.state or "?", style=color_for_state(job.state))
         summary.append(" • ")
-        summary.append(job.user or "?")
+        summary.append(job.user or "?", style=user_style)
         summary.append(" • ")
         summary.append(job.partition or "?")
         summary.append(" • ")

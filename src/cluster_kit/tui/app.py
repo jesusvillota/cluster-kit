@@ -7,7 +7,7 @@ uv run cluster_kit/tui/app.py \
 
 CLI Arguments:
 --refresh (default: 60) {squeue auto-refresh interval in seconds}
---all-users (default: false) {Show all users' jobs, not just the current user}
+--all-users (default: true) {Show all users' jobs, not just the current user}
 
 LLM-optimized description: Runs a Textual terminal UI for cluster monitoring
 with 3 tabs: queue, available resources, and logs. Reads SLURM queue state,
@@ -99,7 +99,7 @@ class ClusterTUI(App[None]):
     def __init__(
         self,
         refresh_interval: int = 60,
-        all_users: bool = False,
+        all_users: bool = True,
         qa_safe_mode: bool | None = None,
     ) -> None:
         super().__init__()
@@ -190,7 +190,7 @@ class ClusterTUI(App[None]):
         queue_table = self.query_one(QueueTable)
         available_resources_table = self.query_one(AvailableResourcesTable)
         status_bar = self.query_one(ConnectionStatus)
-        queue_table.refresh_data(jobs)
+        queue_table.refresh_data(jobs, get_cluster_user())
         available_resources_table.refresh_data(availability_rows)
         queue_table.set_loading(False)
         status_bar.update_status(connected, job_count, datetime.now())
