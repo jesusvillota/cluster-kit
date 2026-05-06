@@ -11,13 +11,12 @@ import pytest
 from cluster_kit.config import (
     ClusterConfig,
     ConfigError,
+    _get_env_var,
     load_config,
+    reset_config_cache,
     validate_config,
     validate_config_strict,
-    reset_config_cache,
-    _get_env_var,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

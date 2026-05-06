@@ -181,6 +181,46 @@ def _cmd_serve(args: argparse.Namespace) -> None:
         sys.exit(0)
 
 
+def _cmd_env_create(args: argparse.Namespace) -> None:
+    """Generate environment files from pyproject.toml."""
+    from pathlib import Path
+
+    from cluster_kit.env.builder import create_environment_files
+
+    pyproject_path = Path(args.pyproject).resolve()
+    output_dir = Path(args.output_dir).resolve()
+    python_version = args.python_version if hasattr(args, "python_version") else None
+
+    create_environment_files(
+        pyproject_path=pyproject_path,
+        output_dir=output_dir,
+        python_version=python_version,
+        include_dev=args.include_dev,
+        dry_run=args.dry_run,
+    )
+
+
+def _cmd_env_launch(args: argparse.Namespace) -> None:
+    """Upload environment files and submit env build job to cluster."""
+    from pathlib import Path
+
+    from cluster_kit.env.builder import launch_environment
+
+    env_file = Path(args.env_file).resolve()
+    slurm_file = Path(args.slurm_file).resolve()
+    pyproject_path = Path(args.pyproject).resolve()
+    python_version = args.python_version if hasattr(args, "python_version") else None
+
+    launch_environment(
+        env_file=env_file,
+        slurm_file=slurm_file,
+        pyproject_path=pyproject_path,
+        wait=args.wait,
+        check_interval=args.check_interval,
+        python_version=python_version,
+    )
+
+
 def _build_sync_parser(subparsers: argparse._SubParsersAction) -> None:
     """Build the 'sync' subcommand with nested sub-subcommands."""
     sync_parser = subparsers.add_parser(
@@ -527,6 +567,91 @@ def _build_serve_parser(subparsers: argparse._SubParsersAction) -> None:
     stop_parser.set_defaults(func=_cmd_serve)
 
 
+def _build_env_parser(subparsers: argparse._SubParsersAction) -> None:
+    """Build the 'env' subcommand with create and launch sub-subcommands."""
+    env_parser = subparsers.add_parser(
+        "env",
+        help="Manage cluster conda environment from pyproject.toml",
+    )
+    env_sub = env_parser.add_subparsers(
+        dest="env_command", help="Environment commands", required=True
+    )
+
+    create_parser = env_sub.add_parser(
+        "create",
+        help="Generate environment.yml and conda_env.slurm from pyproject.toml",
+    )
+    create_parser.add_argument(
+        "--pyproject",
+        default="pyproject.toml",
+        help="Path to pyproject.toml (default: ./pyproject.toml)",
+    )
+    create_parser.add_argument(
+        "--output-dir",
+        default=".",
+        help="Directory to write generated files (default: current directory)",
+    )
+    create_parser.add_argument(
+        "--python-version",
+        default=None,
+        metavar="VERSION",
+        help="Override Python version (e.g. 3.10, 3.12)",
+    )
+    create_parser.add_argument(
+        "--include-dev",
+        action="store_true",
+        default=False,
+        help="Include dev optional-dependencies",
+    )
+    create_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Print generated files instead of writing them",
+    )
+    create_parser.set_defaults(func=_cmd_env_create)
+
+    launch_parser = env_sub.add_parser(
+        "launch",
+        help="Upload environment files and submit env build job to cluster",
+    )
+    launch_parser.add_argument(
+        "--pyproject",
+        default="pyproject.toml",
+        help="Path to pyproject.toml (used to auto-generate env files if missing)",
+    )
+    launch_parser.add_argument(
+        "--env-file",
+        default="environment.yml",
+        help="Local path to environment.yml (default: ./environment.yml)",
+    )
+    launch_parser.add_argument(
+        "--slurm-file",
+        default="conda_env.slurm",
+        help="Local path to conda_env.slurm (default: ./conda_env.slurm)",
+    )
+    launch_parser.add_argument(
+        "--python-version",
+        default=None,
+        metavar="VERSION",
+        help="Override Python version for auto-generation",
+    )
+    launch_parser.add_argument(
+        "--wait",
+        action="store_true",
+        default=False,
+        help="Wait for the job to complete and show status",
+    )
+    launch_parser.add_argument(
+        "--check-interval",
+        type=int,
+        default=30,
+        metavar="SECONDS",
+        help="Seconds between status checks when --wait is set (default: 30)",
+    )
+    launch_parser.set_defaults(func=_cmd_env_launch)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build and return the top-level argument parser."""
     parser = argparse.ArgumentParser(
@@ -550,6 +675,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     _build_sync_parser(subparsers)
+    _build_env_parser(subparsers)
     _build_tui_parser(subparsers)
     _build_launch_parser(subparsers)
     _build_serve_parser(subparsers)

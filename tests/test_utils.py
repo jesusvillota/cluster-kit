@@ -2,23 +2,21 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from cluster_kit.sync.transfer import (
     ParsedPath,
-    parse_path,
+    TransferDirection,
     _is_valid_host,
     detect_direction,
-    TransferDirection,
+    parse_path,
 )
 from cluster_kit.utils.rsync import RsyncRunner, ScpRunner
 from cluster_kit.utils.ssh import ClusterConnection
-
 
 # ---------------------------------------------------------------------------
 # ParsedPath
