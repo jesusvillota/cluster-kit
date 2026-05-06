@@ -38,6 +38,7 @@ __all__ = [
     "get_ssh_key",
     "get_ssh_timeout",
     "get_sync_exclude",
+    "get_slurm_partition",
 ]
 
 
@@ -49,9 +50,18 @@ _DEFAULT_HOST = "cluster"
 _DEFAULT_SSH_KEY = "~/.ssh/id_ed25519_cluster"
 _DEFAULT_SSH_TIMEOUT = 30
 _DEFAULT_SYNC_EXCLUDE = "__pycache__,*.pyc,*.pyo"
+_DEFAULT_SLURM_PARTITION = "cpu_express"
 
 # Variable base names (without CLUSTER_ prefix)
-_VAR_NAMES = ("HOST", "USER", "REMOTE_BASE", "SSH_KEY", "SSH_TIMEOUT", "SYNC_EXCLUDE")
+_VAR_NAMES = (
+    "HOST",
+    "USER",
+    "REMOTE_BASE",
+    "SSH_KEY",
+    "SSH_TIMEOUT",
+    "SYNC_EXCLUDE",
+    "SLURM_PARTITION",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +89,7 @@ class ClusterConfig:
         ssh_key: Path to the SSH private key file.
         ssh_timeout: SSH connection timeout in seconds (1-300).
         sync_exclude: Comma-separated rsync exclude patterns.
+        slurm_partition: SLURM partition for job submission.
     """
 
     host: str
@@ -87,6 +98,7 @@ class ClusterConfig:
     ssh_key: Path
     ssh_timeout: int
     sync_exclude: str
+    slurm_partition: str
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +168,9 @@ def load_config(
     ssh_key_raw = _get_env_var("SSH_KEY", env_profile) or _DEFAULT_SSH_KEY
     ssh_timeout_raw = _get_env_var("SSH_TIMEOUT", env_profile)
     sync_exclude = _get_env_var("SYNC_EXCLUDE", env_profile) or _DEFAULT_SYNC_EXCLUDE
+    slurm_partition = (
+        _get_env_var("SLURM_PARTITION", env_profile) or _DEFAULT_SLURM_PARTITION
+    )
 
     # Type conversions
     if remote_base_raw is None:
@@ -181,6 +196,7 @@ def load_config(
         ssh_key=Path(ssh_key_raw).expanduser(),
         ssh_timeout=ssh_timeout,
         sync_exclude=sync_exclude,
+        slurm_partition=slurm_partition,
     )
 
 
@@ -308,6 +324,11 @@ def get_ssh_timeout() -> int:
 def get_sync_exclude() -> str:
     """Return the configured sync exclude patterns."""
     return _get_config().sync_exclude
+
+
+def get_slurm_partition() -> str:
+    """Return the configured SLURM partition."""
+    return _get_config().slurm_partition
 
 
 def reset_config_cache() -> None:

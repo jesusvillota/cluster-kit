@@ -18,7 +18,7 @@ from rich import box
 from rich.console import Console
 from rich.panel import Panel
 
-from cluster_kit.config import get_cluster_host, get_remote_base
+from cluster_kit.config import get_cluster_host, get_remote_base, get_slurm_partition
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -132,7 +132,7 @@ _CONDA_ENV_SLURM = """\
 #SBATCH --job-name=env_{project_name}
 #SBATCH --output={remote_base}/_logs_/build_env/build_env.out
 #SBATCH --error={remote_base}/_logs_/build_env/build_env.err
-#SBATCH --partition=cpu_express
+#SBATCH --partition={partition}
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --time=01:00:00
@@ -184,7 +184,11 @@ fi
 """
 
 
-def generate_slurm_script(project_name: str, remote_base: str) -> str:
+def generate_slurm_script(
+    project_name: str,
+    remote_base: str,
+    partition: str = "cpu_express",
+) -> str:
     """Generate conda_env.slurm content with resolved cluster paths."""
     remote_base_str = str(remote_base).rstrip("/")
     conda_base = str(Path(remote_base_str).parent)
@@ -193,6 +197,7 @@ def generate_slurm_script(project_name: str, remote_base: str) -> str:
         project_name=project_name,
         remote_base=remote_base_str,
         conda_base=conda_base,
+        partition=partition,
     )
 
 
@@ -208,6 +213,7 @@ def create_environment_files(
     python_version: Optional[str] = None,
     include_dev: bool = False,
     dry_run: bool = False,
+    partition: Optional[str] = None,
 ) -> None:
     """Generate environment.yml and conda_env.slurm from pyproject.toml.
 
@@ -217,6 +223,8 @@ def create_environment_files(
         python_version: Override detected Python version (e.g. ``"3.10"``).
         include_dev: Include dev optional-dependencies.
         dry_run: Print generated files to stdout instead of writing.
+        partition: SLURM partition for the env build job. Falls back to
+            ``CLUSTER_SLURM_PARTITION`` env var, then ``"cpu_express"``.
     """
     if not pyproject_path.exists():
         _console.print(
@@ -242,7 +250,13 @@ def create_environment_files(
     except Exception:
         remote_base = "{REMOTE_BASE}"
 
-    slurm_content = generate_slurm_script(name, remote_base)
+    if partition is None:
+        try:
+            partition = get_slurm_partition()
+        except Exception:
+            partition = "cpu_express"
+
+    slurm_content = generate_slurm_script(name, remote_base, partition=partition)
 
     if dry_run:
         _console.print(f"[bold cyan]--- environment.yml ---[/bold cyan]")
@@ -404,6 +418,7 @@ def launch_environment(
     wait: bool = False,
     check_interval: int = 30,
     python_version: Optional[str] = None,
+    partition: Optional[str] = None,
 ) -> None:
     """Upload environment files to cluster and submit the env build job.
 
@@ -415,6 +430,8 @@ def launch_environment(
         wait: Whether to poll until the job completes.
         check_interval: Seconds between status checks when waiting.
         python_version: Override Python version for auto-generation.
+        partition: SLURM partition for the env build job. Falls back to
+            ``CLUSTER_SLURM_PARTITION`` env var, then ``"cpu_express"``.
     """
     # 1. Auto-generate files if missing
     if not env_file.exists() or not slurm_file.exists():
@@ -427,6 +444,7 @@ def launch_environment(
             output_dir=env_file.parent,
             python_version=python_version,
             dry_run=False,
+            partition=partition,
         )
 
     # 2. Load config

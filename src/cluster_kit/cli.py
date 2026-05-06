@@ -197,6 +197,7 @@ def _cmd_env_create(args: argparse.Namespace) -> None:
         python_version=python_version,
         include_dev=args.include_dev,
         dry_run=args.dry_run,
+        partition=args.partition,
     )
 
 
@@ -218,6 +219,7 @@ def _cmd_env_launch(args: argparse.Namespace) -> None:
         wait=args.wait,
         check_interval=args.check_interval,
         python_version=python_version,
+        partition=args.partition,
     )
 
 
@@ -609,6 +611,11 @@ def _build_env_parser(subparsers: argparse._SubParsersAction) -> None:
         default=False,
         help="Print generated files instead of writing them",
     )
+    create_parser.add_argument(
+        "--partition",
+        default=None,
+        help="SLURM partition for env build job (default: from env or cpu_express)",
+    )
     create_parser.set_defaults(func=_cmd_env_create)
 
     launch_parser = env_sub.add_parser(
@@ -648,6 +655,11 @@ def _build_env_parser(subparsers: argparse._SubParsersAction) -> None:
         default=30,
         metavar="SECONDS",
         help="Seconds between status checks when --wait is set (default: 30)",
+    )
+    launch_parser.add_argument(
+        "--partition",
+        default=None,
+        help="SLURM partition for env build job (default: from env or cpu_express)",
     )
     launch_parser.set_defaults(func=_cmd_env_launch)
 
