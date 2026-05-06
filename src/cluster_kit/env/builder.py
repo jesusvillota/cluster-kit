@@ -186,12 +186,12 @@ fi
 
 def generate_slurm_script(project_name: str, remote_base: str) -> str:
     """Generate conda_env.slurm content with resolved cluster paths."""
-    remote_base = remote_base.rstrip("/")
-    conda_base = str(Path(remote_base).parent)
+    remote_base_str = str(remote_base).rstrip("/")
+    conda_base = str(Path(remote_base_str).parent)
 
     return _CONDA_ENV_SLURM.format(
         project_name=project_name,
-        remote_base=remote_base,
+        remote_base=remote_base_str,
         conda_base=conda_base,
     )
 
@@ -238,7 +238,7 @@ def create_environment_files(
     yml_content = generate_environment_yml(project_data, include_dev=include_dev)
 
     try:
-        remote_base = get_remote_base()
+        remote_base = str(get_remote_base())
     except Exception:
         remote_base = "{REMOTE_BASE}"
 
@@ -445,7 +445,7 @@ def launch_environment(
         )
         sys.exit(1)
 
-    remote_base = remote_base.rstrip("/")
+    remote_base = str(remote_base).rstrip("/")
 
     # 3. Test connection
     _console.print("\n[cyan]Testing cluster connection...[/cyan]")
