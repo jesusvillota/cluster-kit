@@ -44,7 +44,7 @@ class ConfirmCancelScreen(ModalScreen[bool]):
             self.dismiss(False)
 
     def on_mount(self) -> None:
-        self.query_one("#confirm", Button).focus()
+        self.query_one("#keep", Button).focus()
 
     def action_dismiss_cancel(self) -> None:
         self.dismiss(False)

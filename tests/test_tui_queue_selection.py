@@ -46,7 +46,7 @@ class _ConfirmCancelApp(App[None]):
         yield from ()
 
 
-def test_confirm_cancel_screen_renders_equal_buttons_and_focuses_confirm() -> None:
+def test_confirm_cancel_screen_renders_equal_buttons_and_focuses_keep_running() -> None:
     async def run() -> None:
         app = _ConfirmCancelApp()
         async with app.run_test() as pilot:
@@ -60,7 +60,7 @@ def test_confirm_cancel_screen_renders_equal_buttons_and_focuses_confirm() -> No
             assert confirm.label.plain == "Confirm"
             assert keep.label.plain == "Keep Running"
             assert confirm.size == keep.size
-            assert confirm.has_focus
+            assert keep.has_focus
 
     asyncio.run(run())
 
