@@ -171,7 +171,7 @@ cluster-kit tui --all-users
 | Flag | Description |
 |---|---|
 | `--phone` | Optimize layout for phone screens |
-| `--refresh N` | Refresh interval in seconds (default: 5) |
+| `--refresh N` | Refresh interval in seconds (default: 60) |
 | `--all-users` | Show jobs for all cluster users |
 
 ### `launch`

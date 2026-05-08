@@ -195,7 +195,7 @@ class TestTuiParser:
         parser = build_parser()
         args = parser.parse_args(["tui"])
         assert args.phone is False
-        assert args.refresh == 5
+        assert args.refresh == 60
         assert args.all_users is False
 
     def test_phone_flag(self):

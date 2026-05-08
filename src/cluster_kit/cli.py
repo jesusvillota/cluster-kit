@@ -356,9 +356,9 @@ def _build_tui_parser(subparsers: argparse._SubParsersAction) -> None:
     tui_parser.add_argument(
         "--refresh",
         type=int,
-        default=5,
+        default=60,
         metavar="N",
-        help="Refresh interval in seconds (default: 5)",
+        help="Refresh interval in seconds (default: 60)",
     )
     tui_parser.add_argument(
         "--all-users",
