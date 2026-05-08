@@ -9,6 +9,7 @@ from cluster_kit.tui.backend.available_resources import (
 from cluster_kit.tui.backend.job_actions import SSHResult
 from cluster_kit.tui.backend.log_discovery import LogFile
 from cluster_kit.tui.backend.queue_parser import JobInfo
+from cluster_kit.tui.ownership import user_matches_allowed_owner
 
 
 @dataclass(frozen=True)
@@ -17,10 +18,14 @@ class SelectedJob:
 
     job_id: str
     name: str = ""
+    user: str = ""
 
     @classmethod
     def from_job_info(cls, job_info: JobInfo) -> "SelectedJob":
-        return cls(job_id=job_info.job_id, name=job_info.name)
+        return cls(job_id=job_info.job_id, name=job_info.name, user=job_info.user)
+
+    def is_owned_by(self, allowed_user: str) -> bool:
+        return user_matches_allowed_owner(self.user, allowed_user)
 
 
 @dataclass(frozen=True)
@@ -88,9 +93,13 @@ class ClusterTUIController:
     @staticmethod
     def require_selected_job(
         selected_job: SelectedJob | None,
+        *,
+        allowed_user: str,
     ) -> tuple[SelectedJob | None, str | None]:
         if selected_job is None:
             return None, "No job selected"
+        if not selected_job.is_owned_by(allowed_user):
+            return None, f"Only jobs owned by {allowed_user} can be selected"
         return selected_job, None
 
     def cancel_selected_job(self, job_id: str, *, qa_safe_mode: bool) -> SSHResult:

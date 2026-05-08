@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 
-from cluster_kit.utils import SSH_HOST
+from cluster_kit.config import get_cluster_host
 
 
 @dataclass(slots=True)
@@ -22,8 +22,9 @@ def run_ssh_command(command: str, timeout: int = 30) -> SSHResult:
     """Run a command on the cluster over SSH."""
 
     try:
+        ssh_host = get_cluster_host()
         result = subprocess.run(
-            ["ssh", SSH_HOST, command],
+            ["ssh", ssh_host, command],
             capture_output=True,
             text=True,
             timeout=timeout,

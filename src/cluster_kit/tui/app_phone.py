@@ -240,7 +240,11 @@ class PhoneClusterTUI(App[None]):
         self.query_one("#phone-action-toggle-stderr", Button).disabled = (
             log_viewer.current_job_id is None or log_viewer.current_file is None
         )
-        tooltip = None if queue_selector.has_jobs else "No job selected"
+        tooltip = (
+            None
+            if has_selected_job
+            else queue_selector.selection_unavailable_reason
+        )
         self.query_one("#phone-action-selected-logs", Button).tooltip = tooltip
         self.query_one("#phone-action-cancel", Button).tooltip = tooltip
 
@@ -259,7 +263,8 @@ class PhoneClusterTUI(App[None]):
 
     def action_cancel_job(self) -> None:
         selected_job, message = self._controller.require_selected_job(
-            self._get_selected_job()
+            self._get_selected_job(),
+            allowed_user=get_cluster_user(),
         )
         if selected_job is None:
             self.notify(message or "No job selected")
@@ -284,7 +289,8 @@ class PhoneClusterTUI(App[None]):
 
     def action_view_logs(self) -> None:
         selected_job, message = self._controller.require_selected_job(
-            self._get_selected_job()
+            self._get_selected_job(),
+            allowed_user=get_cluster_user(),
         )
         if selected_job is None:
             self.notify(message or "No job selected")

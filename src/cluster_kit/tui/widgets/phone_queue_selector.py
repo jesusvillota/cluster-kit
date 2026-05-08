@@ -15,10 +15,12 @@ from ..backend.queue_parser import (  # noqa: E402
     color_for_state,
 )
 from ..controller import SelectedJob  # noqa: E402
+from ..ownership import user_matches_allowed_owner  # noqa: E402
 
 _RUNNING_OR_COMPLETING_STATES = {"R", "RUNNING", "CG", "COMPLETING"}
 _EMPTY_MESSAGE = "No jobs in queue. Refresh to load active jobs."
 _REFRESHING_MESSAGE = "Refreshing queue…"
+_NON_SELECTABLE_JOB_STYLE = "grey62"
 
 
 class PhoneQueueSelector(Widget):
@@ -53,10 +55,12 @@ class PhoneQueueSelector(Widget):
         self._selected_job_id: str | None = None
         self._loading = False
         self._has_jobs = False
+        self._allowed_user = ""
+        self._is_adjusting_highlight = False
 
     def compose(self) -> ComposeResult:
         yield Static(
-            "Tap a job to select it. Selected Logs and Cancel use that selection.",
+            "Only jobs owned by the configured cluster user can be selected.",
             id="phone-queue-hint",
         )
         yield Static(_EMPTY_MESSAGE, id="phone-queue-empty")
@@ -69,9 +73,11 @@ class PhoneQueueSelector(Widget):
         self, jobs: list[JobInfo], current_user: str = ""
     ) -> None:
         self._loading = False
+        previous_selected_job_id = self._selected_job_id
         self._jobs = list(jobs)
         self._jobs_by_id = {job.job_id: job for job in self._jobs}
         self._has_jobs = bool(self._jobs)
+        self._allowed_user = current_user
 
         option_list = self.query_one(OptionList)
         option_list.clear_options()
@@ -87,12 +93,20 @@ class PhoneQueueSelector(Widget):
         option_list.add_options(
             [self._render_job(job, current_user) for job in self._jobs]
         )
+        for index, job in enumerate(self._jobs):
+            if not self._is_selectable_job(job):
+                option_list.disable_option_at_index(index)
 
-        if self._selected_job_id not in self._jobs_by_id:
-            self._selected_job_id = self._jobs[0].job_id
+        selectable_job_ids = {
+            job.job_id for job in self._jobs if self._is_selectable_job(job)
+        }
+        if previous_selected_job_id not in selectable_job_ids:
+            self._selected_job_id = self._first_selectable_job_id()
+        else:
+            self._selected_job_id = previous_selected_job_id
 
         selected_index = self._selected_index()
-        option_list.highlighted = selected_index if selected_index is not None else 0
+        self._set_highlight(selected_index)
 
     def set_loading(self, value: bool) -> None:
         self._loading = value
@@ -111,7 +125,7 @@ class PhoneQueueSelector(Widget):
             return None
 
         job = self._jobs_by_id.get(self._selected_job_id)
-        if job is None:
+        if job is None or not self._is_selectable_job(job):
             return None
 
         return SelectedJob.from_job_info(job)
@@ -119,6 +133,18 @@ class PhoneQueueSelector(Widget):
     @property
     def has_jobs(self) -> bool:
         return self._has_jobs
+
+    @property
+    def has_selectable_jobs(self) -> bool:
+        return self._first_selectable_job_id() is not None
+
+    @property
+    def selection_unavailable_reason(self) -> str:
+        if self.has_selectable_jobs and self._allowed_user:
+            return f"Select a job owned by {self._allowed_user}"
+        if self._has_jobs and self._allowed_user:
+            return f"Only jobs owned by {self._allowed_user} can be selected"
+        return "No job selected"
 
     def on_option_list_option_highlighted(
         self, message: OptionList.OptionHighlighted
@@ -135,13 +161,24 @@ class PhoneQueueSelector(Widget):
             return None
 
         for index, job in enumerate(self._jobs):
-            if job.job_id == self._selected_job_id:
+            if job.job_id == self._selected_job_id and self._is_selectable_job(job):
                 return index
         return None
 
     def _sync_selected_job(self, option_index: int) -> None:
-        if 0 <= option_index < len(self._jobs):
-            self._selected_job_id = self._jobs[option_index].job_id
+        if self._is_adjusting_highlight or not 0 <= option_index < len(self._jobs):
+            return
+
+        job = self._jobs[option_index]
+        if self._is_selectable_job(job):
+            self._selected_job_id = job.job_id
+            return
+
+        target_index = self._nearest_selectable_index(option_index)
+        self._selected_job_id = (
+            self._jobs[target_index].job_id if target_index is not None else None
+        )
+        self._set_highlight(target_index)
 
     def _render_empty_state(self, message: str) -> None:
         empty_notice = self.query_one("#phone-queue-empty", Static)
@@ -157,16 +194,40 @@ class PhoneQueueSelector(Widget):
 
     @staticmethod
     def _render_job(job: JobInfo, current_user: str = "") -> Group:
+        is_current_user = user_matches_allowed_owner(job.user, current_user)
+        base_style = "" if is_current_user else _NON_SELECTABLE_JOB_STYLE
         title = Text()
-        title.append(job.job_id, style="bold cyan")
+        title_style = (
+            "bold cyan"
+            if is_current_user
+            else f"bold {_NON_SELECTABLE_JOB_STYLE}"
+        )
+        title.append(
+            job.job_id,
+            style=title_style,
+        )
         title.append("  ")
-        title.append(job.name or "Unnamed job", style="bold")
+        title.append(
+            job.name or "Unnamed job",
+            style="bold" if is_current_user else f"bold {_NON_SELECTABLE_JOB_STYLE}",
+        )
 
-        is_current_user = job.user == current_user
-        user_style = "bold bright_green" if is_current_user else "dim magenta"
+        user_style = (
+            "bold bright_green"
+            if is_current_user
+            else _NON_SELECTABLE_JOB_STYLE
+        )
 
-        summary = Text(style="dim")
-        summary.append(job.state or "?", style=color_for_state(job.state))
+        summary = Text(style=base_style or "dim")
+        state_style = (
+            color_for_state(job.state)
+            if is_current_user
+            else _NON_SELECTABLE_JOB_STYLE
+        )
+        summary.append(
+            job.state or "?",
+            style=state_style,
+        )
         summary.append(" • ")
         summary.append(job.user or "?", style=user_style)
         summary.append(" • ")
@@ -174,7 +235,7 @@ class PhoneQueueSelector(Widget):
         summary.append(" • ")
         summary.append(job.time or "—")
 
-        detail = Text(style="dim")
+        detail = Text(style=base_style or "dim")
         if job.state.strip().upper() in _RUNNING_OR_COMPLETING_STATES:
             detail.append(f"{job.cpus_display} CPU")
             detail.append(" • ")
@@ -190,6 +251,47 @@ class PhoneQueueSelector(Widget):
             detail.append("No extra details")
 
         return Group(title, summary, detail)
+
+    def _is_selectable_job(self, job: JobInfo) -> bool:
+        return user_matches_allowed_owner(job.user, self._allowed_user)
+
+    def _first_selectable_job_id(self) -> str | None:
+        for job in self._jobs:
+            if self._is_selectable_job(job):
+                return job.job_id
+        return None
+
+    def _nearest_selectable_index(self, option_index: int) -> int | None:
+        selectable_indices = [
+            index
+            for index, job in enumerate(self._jobs)
+            if self._is_selectable_job(job)
+        ]
+        if not selectable_indices:
+            return None
+
+        selected_index = self._selected_index()
+        if selected_index is not None:
+            if option_index > selected_index:
+                for index in selectable_indices:
+                    if index > option_index:
+                        return index
+                return selected_index
+            if option_index < selected_index:
+                for index in reversed(selectable_indices):
+                    if index < option_index:
+                        return index
+                return selected_index
+
+        return min(selectable_indices, key=lambda index: abs(index - option_index))
+
+    def _set_highlight(self, option_index: int | None) -> None:
+        option_list = self.query_one(OptionList)
+        self._is_adjusting_highlight = True
+        try:
+            option_list.highlighted = option_index
+        finally:
+            self._is_adjusting_highlight = False
 
 
 __all__ = ["PhoneQueueSelector"]

@@ -207,7 +207,8 @@ class ClusterTUI(App[None]):
 
     def action_cancel_job(self) -> None:
         selected_job, message = self._controller.require_selected_job(
-            self._get_selected_job()
+            self._get_selected_job(),
+            allowed_user=get_cluster_user(),
         )
         if selected_job is None:
             self.notify(message or "No job selected")
@@ -228,7 +229,8 @@ class ClusterTUI(App[None]):
 
     def action_view_logs(self) -> None:
         selected_job, message = self._controller.require_selected_job(
-            self._get_selected_job()
+            self._get_selected_job(),
+            allowed_user=get_cluster_user(),
         )
         if selected_job is None:
             self.notify(message or "No job selected")
