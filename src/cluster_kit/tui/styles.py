@@ -14,12 +14,13 @@ ConfirmCancelScreen {
 
 ConfirmCancelScreen > Grid {
     width: 60;
-    height: 13;
+    height: auto;
+    min-height: 15;
     background: $surface;
     border: thick $primary;
     padding: 1 2;
     grid-size: 1 3;
-    grid-rows: 3 3 3;
+    grid-rows: auto auto auto;
     grid-gutter: 1;
 }
 
@@ -27,7 +28,7 @@ ConfirmCancelScreen.phone-compact > Grid {
     width: 92vw;
     max-width: 36;
     height: auto;
-    min-height: 12;
+    min-height: 15;
     grid-size: 1;
     grid-rows: auto auto auto;
 }
@@ -47,11 +48,15 @@ ConfirmCancelScreen.phone-compact #dialog-label {
 ConfirmCancelScreen #confirm {
     width: 1fr;
     height: 3;
+    content-align: center middle;
+    text-align: center;
 }
 
 ConfirmCancelScreen #keep {
     width: 1fr;
     height: 3;
+    content-align: center middle;
+    text-align: center;
 }
 
 /* ========================================================================

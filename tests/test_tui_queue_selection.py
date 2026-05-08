@@ -4,10 +4,12 @@ import asyncio
 
 from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.widgets import Button
 from textual.widgets import DataTable, OptionList
 
 from cluster_kit.tui.backend.queue_parser import JobInfo
 from cluster_kit.tui.controller import ClusterTUIController, SelectedJob
+from cluster_kit.tui.screens import ConfirmCancelScreen
 from cluster_kit.tui.widgets.phone_queue_selector import PhoneQueueSelector
 from cluster_kit.tui.widgets.queue_table import QueueTable
 
@@ -37,6 +39,30 @@ class _QueueTableApp(App[None]):
 class _PhoneQueueSelectorApp(App[None]):
     def compose(self) -> ComposeResult:
         yield PhoneQueueSelector()
+
+
+class _ConfirmCancelApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield from ()
+
+
+def test_confirm_cancel_screen_renders_equal_buttons_and_focuses_confirm() -> None:
+    async def run() -> None:
+        app = _ConfirmCancelApp()
+        async with app.run_test() as pilot:
+            screen = ConfirmCancelScreen("17037", "process_whale_counts")
+            app.push_screen(screen)
+            await pilot.pause()
+
+            confirm = screen.query_one("#confirm", Button)
+            keep = screen.query_one("#keep", Button)
+
+            assert confirm.label.plain == "Confirm"
+            assert keep.label.plain == "Keep Running"
+            assert confirm.size == keep.size
+            assert confirm.has_focus
+
+    asyncio.run(run())
 
 
 def test_require_selected_job_rejects_non_owned_jobs() -> None:
