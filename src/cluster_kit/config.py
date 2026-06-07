@@ -98,7 +98,7 @@ class ClusterConfig:
     ssh_key: Path
     ssh_timeout: int
     sync_exclude: str
-    slurm_partition: str
+    slurm_partition: str = _DEFAULT_SLURM_PARTITION
 
 
 # ---------------------------------------------------------------------------

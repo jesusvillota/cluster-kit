@@ -4,8 +4,7 @@ import asyncio
 
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.widgets import Button
-from textual.widgets import DataTable, OptionList
+from textual.widgets import Button, DataTable, OptionList
 
 from cluster_kit.tui.backend.queue_parser import JobInfo
 from cluster_kit.tui.controller import ClusterTUIController, SelectedJob

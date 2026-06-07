@@ -259,9 +259,9 @@ def create_environment_files(
     slurm_content = generate_slurm_script(name, remote_base, partition=partition)
 
     if dry_run:
-        _console.print(f"[bold cyan]--- environment.yml ---[/bold cyan]")
+        _console.print("[bold cyan]--- environment.yml ---[/bold cyan]")
         _console.print(yml_content)
-        _console.print(f"[bold cyan]--- conda_env.slurm ---[/bold cyan]")
+        _console.print("[bold cyan]--- conda_env.slurm ---[/bold cyan]")
         _console.print(slurm_content)
         return
 
@@ -281,7 +281,10 @@ def create_environment_files(
             box=box.ROUNDED,
         )
     )
-    detail = f"  [cyan]environment.yml:[/cyan]  {env_yml_path}\n  [cyan]conda_env.slurm:[/cyan]  {slurm_path}"
+    detail = (
+        f"  [cyan]environment.yml:[/cyan]  {env_yml_path}\n"
+        f"  [cyan]conda_env.slurm:[/cyan]  {slurm_path}"
+    )
     _console.print(detail)
     _console.print()
 
@@ -340,7 +343,9 @@ def _wait_for_job(job_id: str, check_interval: int) -> bool:
     dots = 0
 
     _console.print(f"\n[cyan]Waiting for job {job_id} to complete...[/cyan]")
-    _console.print("  (Ctrl+C to stop waiting — the job will continue on the cluster)\n")
+    _console.print(
+        "  (Ctrl+C to stop waiting — the job will continue on the cluster)\n"
+    )
 
     while True:
         try:
@@ -376,7 +381,8 @@ def _wait_for_job(job_id: str, check_interval: int) -> bool:
 
     try:
         result = _ssh_run(
-            f"sacct -j {job_id} --format State,ExitCode --noheader --parsable2 2>/dev/null",
+            f"sacct -j {job_id} --format State,ExitCode --noheader "
+            "--parsable2 2>/dev/null",
             timeout=15,
         )
         output = result.stdout.strip()
@@ -485,12 +491,12 @@ def launch_environment(
 
     # 4. Create remote log directory
     log_dir = f"{remote_base}/_logs_/build_env"
-    _console.print(f"\n[cyan]Creating log directory...[/cyan]")
+    _console.print("\n[cyan]Creating log directory...[/cyan]")
     _ssh_run(f"mkdir -p '{log_dir}'")
     _console.print(f"  [green][OK][/green] {log_dir}")
 
     # 5. Upload files
-    _console.print(f"\n[cyan]Uploading environment files...[/cyan]")
+    _console.print("\n[cyan]Uploading environment files...[/cyan]")
 
     remote_yml = f"{remote_base}/environment.yml"
     remote_slurm = f"{remote_base}/conda_env.slurm"
@@ -498,15 +504,15 @@ def launch_environment(
     if not _upload_file(env_file, remote_yml):
         _console.print("[red]Failed to upload environment.yml[/red]")
         sys.exit(1)
-    _console.print(f"  [green][OK][/green] environment.yml")
+    _console.print("  [green][OK][/green] environment.yml")
 
     if not _upload_file(slurm_file, remote_slurm):
         _console.print("[red]Failed to upload conda_env.slurm[/red]")
         sys.exit(1)
-    _console.print(f"  [green][OK][/green] conda_env.slurm")
+    _console.print("  [green][OK][/green] conda_env.slurm")
 
     # 6. Submit job
-    _console.print(f"\n[cyan]Submitting slurm job...[/cyan]")
+    _console.print("\n[cyan]Submitting slurm job...[/cyan]")
     try:
         result = _ssh_run(f"cd '{remote_base}' && sbatch conda_env.slurm")
         if result.returncode != 0:
@@ -555,13 +561,14 @@ def launch_environment(
         success = _wait_for_job(job_id, check_interval)
 
         if success:
+            project_name = get_project_name(pyproject_path)
             _console.print()
             _console.print(
                 Panel(
                     f"[green]Environment ready at:[/green]\n"
-                    f"  [cyan]{remote_base}/conda_envs/{get_project_name(pyproject_path)}/[/cyan]\n\n"
+                    f"  [cyan]{remote_base}/conda_envs/{project_name}/[/cyan]\n\n"
                     f"[dim]Activate on cluster:[/dim]\n"
-                    f"  conda activate {remote_base}/conda_envs/{get_project_name(pyproject_path)}/",
+                    f"  conda activate {remote_base}/conda_envs/{project_name}/",
                     title="[OK] Environment Ready",
                     border_style="green",
                     box=box.ROUNDED,

@@ -186,6 +186,52 @@ class TestLaunchParser:
 
 
 # ---------------------------------------------------------------------------
+# workflow subcommand
+# ---------------------------------------------------------------------------
+
+
+class TestWorkflowParser:
+    def test_workflow_run_required_file(self):
+        parser = build_parser()
+        args = parser.parse_args(["workflow", "run", "workflow.toml"])
+        assert args.workflow_command == "run"
+        assert args.workflow_file == "workflow.toml"
+        assert args.dry_run is False
+        assert args.project_root is None
+        assert args.no_sync is False
+        assert args.dependency is None
+
+    def test_workflow_run_options(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "workflow",
+            "run",
+            "workflow.toml",
+            "--dry-run",
+            "--project-root",
+            "/tmp/project",
+            "--no-sync",
+            "--dependency",
+            "afterany",
+        ])
+        assert args.dry_run is True
+        assert args.project_root == "/tmp/project"
+        assert args.no_sync is True
+        assert args.dependency == "afterany"
+
+    def test_workflow_invalid_dependency_exits(self):
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args([
+                "workflow",
+                "run",
+                "workflow.toml",
+                "--dependency",
+                "invalid",
+            ])
+
+
+# ---------------------------------------------------------------------------
 # tui subcommand
 # ---------------------------------------------------------------------------
 

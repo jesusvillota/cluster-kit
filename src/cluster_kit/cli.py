@@ -223,6 +223,25 @@ def _cmd_env_launch(args: argparse.Namespace) -> None:
     )
 
 
+def _cmd_workflow_run(args: argparse.Namespace) -> None:
+    """Submit a TOML-defined workflow to SLURM."""
+    from pathlib import Path
+
+    from cluster_kit.workflow import WorkflowError, submit_workflow
+
+    try:
+        submit_workflow(
+            Path(args.workflow_file),
+            dry_run=args.dry_run,
+            project_root=args.project_root,
+            sync=False if args.no_sync else None,
+            dependency=args.dependency,
+        )
+    except WorkflowError as exc:
+        print(f"[cluster-kit] Workflow error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
 def _build_sync_parser(subparsers: argparse._SubParsersAction) -> None:
     """Build the 'sync' subcommand with nested sub-subcommands."""
     sync_parser = subparsers.add_parser(
@@ -363,7 +382,7 @@ def _build_tui_parser(subparsers: argparse._SubParsersAction) -> None:
     tui_parser.add_argument(
         "--all-users",
         action="store_true",
-        default=True,
+        default=False,
         help="Show jobs for all cluster users",
     )
     tui_parser.set_defaults(func=_cmd_tui)
@@ -664,6 +683,52 @@ def _build_env_parser(subparsers: argparse._SubParsersAction) -> None:
     launch_parser.set_defaults(func=_cmd_env_launch)
 
 
+def _build_workflow_parser(subparsers: argparse._SubParsersAction) -> None:
+    """Build the 'workflow' subcommand with workflow operations."""
+    workflow_parser = subparsers.add_parser(
+        "workflow",
+        help="Submit TOML-defined SLURM workflows",
+    )
+    workflow_sub = workflow_parser.add_subparsers(
+        dest="workflow_command",
+        help="Workflow commands",
+        required=True,
+    )
+
+    run_parser = workflow_sub.add_parser(
+        "run",
+        help="Submit a workflow file",
+    )
+    run_parser.add_argument(
+        "workflow_file",
+        help="Path to the TOML workflow file",
+    )
+    run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Validate and print the submission plan without submitting jobs",
+    )
+    run_parser.add_argument(
+        "--project-root",
+        default=None,
+        help="Override the workflow project_root",
+    )
+    run_parser.add_argument(
+        "--no-sync",
+        action="store_true",
+        default=False,
+        help="Do not sync code before workflow submission",
+    )
+    run_parser.add_argument(
+        "--dependency",
+        choices=["afterok", "afterany"],
+        default=None,
+        help="Override workflow dependency mode",
+    )
+    run_parser.set_defaults(func=_cmd_workflow_run)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build and return the top-level argument parser."""
     parser = argparse.ArgumentParser(
@@ -688,6 +753,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     _build_sync_parser(subparsers)
     _build_env_parser(subparsers)
+    _build_workflow_parser(subparsers)
     _build_tui_parser(subparsers)
     _build_launch_parser(subparsers)
     _build_serve_parser(subparsers)

@@ -49,6 +49,8 @@ __all__ = [
     "add_launcher_args",
     "maybe_launch",
     "resolve_slurm_resources",
+    "submit_command",
+    "submit_job",
 ]
 
 # ---------------------------------------------------------------------------
@@ -467,6 +469,7 @@ def _build_sbatch_base(
     log_dir: str,
     log_pattern: str,
     mail_user: str,
+    dependency: str | None = None,
 ) -> list[str]:
     """Build base sbatch command with resource flags."""
     cmd = [
@@ -490,6 +493,9 @@ def _build_sbatch_base(
             ]
         )
 
+    if dependency:
+        cmd.append(f"--dependency={dependency}")
+
     return cmd
 
 
@@ -512,7 +518,15 @@ def _submit_single(
     remote_base = get_remote_base()
 
     sbatch = _build_sbatch_base(
-        partition, qos, cpus, mem, slurm_time, job_name, log_dir, "%x_%j", mail_user
+        partition,
+        qos,
+        cpus,
+        mem,
+        slurm_time,
+        job_name,
+        log_dir,
+        "%x_%j",
+        mail_user,
     )
 
     # Build environment variables for export
@@ -605,6 +619,7 @@ def submit_job(
     env_vars: dict[str, str] | None = None,
     script_args: list[str] | None = None,
     sync: bool = True,
+    dependency: str | None = None,
 ) -> str | None:
     """Submit a Python script as a SLURM job.
 
@@ -622,6 +637,8 @@ def submit_job(
         env_vars: Environment variables to export to the job.
         script_args: Arguments to pass to the script.
         sync: Whether to sync code before submission.
+        dependency: Optional SLURM dependency expression (for example,
+            ``afterok:12345``).
 
     Returns:
         Job ID if submission succeeded, None otherwise.
@@ -632,8 +649,6 @@ def submit_job(
         return None
 
     project_root = _find_project_root(script_path)
-    remote_base = get_remote_base()
-
     # Optional sync
     if sync:
         if not _run_cluster_sync(project_root):
@@ -645,23 +660,88 @@ def submit_job(
     except ValueError:
         rel_script = str(abs_script)
 
-    # Derive parameters
-    qos = qos or partition
-    job_name = job_name or _derive_job_name(script_path)
-    log_dir = _derive_log_dir(script_path, project_root)
-    texlive = _needs_texlive(script_path)
-    mail_user = os.getenv("CLUSTER_EMAIL", "")
+    python_cmd = ["python", rel_script]
+    if script_args:
+        python_cmd.extend(script_args)
 
-    # Ensure log directory exists
+    return submit_command(
+        " ".join(shlex.quote(s) for s in python_cmd),
+        project_root=project_root,
+        partition=partition,
+        cpus=cpus,
+        mem=mem,
+        time=time,
+        qos=qos,
+        job_name=job_name or _derive_job_name(script_path),
+        log_dir=_derive_log_dir(script_path, project_root),
+        texlive=_needs_texlive(script_path),
+        env_vars=env_vars,
+        sync=False,
+        dependency=dependency,
+    )
+
+
+def submit_command(
+    command: str,
+    *,
+    project_root: Path | str | None = None,
+    partition: str = "cpu_shared",
+    cpus: int = 16,
+    mem: str = "64G",
+    time: str = "04:00:00",
+    qos: str | None = None,
+    job_name: str = "cluster_workflow",
+    log_dir: str = "_logs/workflows",
+    texlive: bool = False,
+    env_vars: dict[str, str] | None = None,
+    sync: bool = False,
+    dependency: str | None = None,
+) -> str | None:
+    """Submit a shell command as a SLURM job.
+
+    Args:
+        command: Shell command to run from the remote project root.
+        project_root: Local project root used for optional sync. Defaults to cwd.
+        partition: SLURM partition.
+        cpus: CPUs per task.
+        mem: Memory allocation.
+        time: Wall-clock time limit.
+        qos: SLURM QoS (default: same as partition).
+        job_name: SLURM job name.
+        log_dir: Remote log directory relative to project root.
+        texlive: Whether to export ``TEXLIVE=1``.
+        env_vars: Extra environment variables to export.
+        sync: Whether to sync before submission.
+        dependency: Optional SLURM dependency expression.
+
+    Returns:
+        Job ID if submission succeeded, None otherwise.
+    """
+    local_project_root = Path(project_root).resolve() if project_root else Path.cwd()
+    remote_base = get_remote_base()
+    qos = qos or partition
+
+    if sync:
+        if not _run_cluster_sync(local_project_root):
+            _console.print("[yellow]Sync failed; attempting submission anyway[/yellow]")
+
     remote_log_dir = f"{remote_base}/{log_dir}"
     _ssh_run(f"mkdir -p '{remote_log_dir}'")
 
-    # Build sbatch command
+    mail_user = os.getenv("CLUSTER_EMAIL", "")
     sbatch = _build_sbatch_base(
-        partition, qos, cpus, mem, time, job_name, log_dir, "%x_%j", mail_user
+        partition,
+        qos,
+        cpus,
+        mem,
+        time,
+        job_name,
+        log_dir,
+        "%x_%j",
+        mail_user,
+        dependency,
     )
 
-    # Environment variables
     env_parts: list[str] = []
     if texlive:
         env_parts.append("TEXLIVE=1")
@@ -671,17 +751,11 @@ def submit_job(
     if env_parts:
         sbatch.append(f"--export=ALL,{','.join(env_parts)}")
 
-    # Python command
-    python_cmd = ["python", rel_script]
-    if script_args:
-        python_cmd.extend(script_args)
-
-    # Wrapper script
     wrapper = f"""#!/bin/bash
 eval "$(conda shell.bash hook)"
 conda activate "{remote_base}/conda_envs/cluster-kit"
 cd "{remote_base}"
-{" ".join(shlex.quote(s) for s in python_cmd)}
+{command}
 """
 
     sbatch.append("--wrap")

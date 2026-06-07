@@ -206,6 +206,61 @@ cluster-kit launch test.py --run-from local
 | `--slurm-time` | `04:00:00` | Wall-clock time limit |
 | `--sync` | `False` | Auto-sync code before submitting |
 
+### `workflow run`
+
+Submit a YAML-defined sequence of raw `uv run` commands as SLURM jobs. Cluster
+Kit submits all jobs up front and uses SLURM dependencies, so your local machine
+does not need to poll or stay connected. TOML is still supported, but YAML is the
+recommended format.
+
+```bash
+cluster-kit workflow run abnormal-volume.yaml
+
+# Validate the plan without submitting jobs
+cluster-kit workflow run abnormal-volume.yaml --dry-run
+```
+
+If you define `jobs:` at the top level, the workflow runs in chain mode. If you
+define `stages:`, the workflow runs in stages mode.
+
+```yaml
+name: abnormal-volume
+dependency: afterok
+sync: true
+
+stages:
+  - name: build-panels
+    parallel: true
+    jobs:
+      - name: panel-2015-2019
+        command: |
+          uv run src/build_panel.py \
+            --years 2015 to 2019 \
+            --run-from cluster --partition cpu_long
+
+      - name: panel-2020-2022
+        command: |
+          uv run src/build_panel.py \
+            --years 2020 to 2022 \
+            --run-from cluster --partition cpu_large
+
+  - name: plots
+    parallel: true
+    jobs:
+      - name: plot-comparison
+        command: |
+          uv run src/plot.py --run-from cluster --partition cpu_express
+```
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `workflow_file` | (required) | YAML or TOML workflow definition |
+| `--dry-run` | `False` | Validate and preview without submitting |
+| `--project-root` | from file | Override local project root for sync |
+| `--no-sync` | `False` | Skip pre-submission code sync |
+| `--dependency` | from file | Override `afterok` or `afterany` |
+
 ### `serve`
 
 Manage a ttyd server for remote phone access to the cluster TUI.
