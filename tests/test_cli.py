@@ -200,6 +200,7 @@ class TestWorkflowParser:
         assert args.project_root is None
         assert args.no_sync is False
         assert args.dependency is None
+        assert args.worker_script is None
 
     def test_workflow_run_options(self):
         parser = build_parser()
@@ -213,11 +214,14 @@ class TestWorkflowParser:
             "--no-sync",
             "--dependency",
             "afterany",
+            "--worker-script",
+            "runnables/slurm/custom_worker.slurm",
         ])
         assert args.dry_run is True
         assert args.project_root == "/tmp/project"
         assert args.no_sync is True
         assert args.dependency == "afterany"
+        assert args.worker_script == "runnables/slurm/custom_worker.slurm"
 
     def test_workflow_invalid_dependency_exits(self):
         parser = build_parser()

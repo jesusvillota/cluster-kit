@@ -236,6 +236,7 @@ def _cmd_workflow_run(args: argparse.Namespace) -> None:
             project_root=args.project_root,
             sync=False if args.no_sync else None,
             dependency=args.dependency,
+            worker_script=args.worker_script,
         )
     except WorkflowError as exc:
         print(f"[cluster-kit] Workflow error: {exc}", file=sys.stderr)
@@ -687,7 +688,7 @@ def _build_workflow_parser(subparsers: argparse._SubParsersAction) -> None:
     """Build the 'workflow' subcommand with workflow operations."""
     workflow_parser = subparsers.add_parser(
         "workflow",
-        help="Submit TOML-defined SLURM workflows",
+        help="Submit YAML/TOML-defined SLURM workflows",
     )
     workflow_sub = workflow_parser.add_subparsers(
         dest="workflow_command",
@@ -701,7 +702,7 @@ def _build_workflow_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     run_parser.add_argument(
         "workflow_file",
-        help="Path to the TOML workflow file",
+        help="Path to the workflow file",
     )
     run_parser.add_argument(
         "--dry-run",
@@ -725,6 +726,11 @@ def _build_workflow_parser(subparsers: argparse._SubParsersAction) -> None:
         choices=["afterok", "afterany"],
         default=None,
         help="Override workflow dependency mode",
+    )
+    run_parser.add_argument(
+        "--worker-script",
+        default=None,
+        help="Override workflow worker script path",
     )
     run_parser.set_defaults(func=_cmd_workflow_run)
 

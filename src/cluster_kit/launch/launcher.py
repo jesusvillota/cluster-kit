@@ -83,6 +83,8 @@ PARTITION_DEFAULTS: dict[str, tuple[int, str, str]] = {
     "gpu_long_unlimited": (16, "8G", "UNLIMITED"),
 }
 
+_DEFAULT_WORKER_SCRIPT = Path("runnables/slurm/worker.slurm")
+
 # Rich console for launcher output
 _console = Console()
 
@@ -382,6 +384,37 @@ def _needs_texlive(script_path: str) -> bool:
     return any(kw in stem for kw in ("visualize", "render", "plot", "figure"))
 
 
+def _resolve_worker_script(
+    project_root: Path,
+    worker_script: Path | str | None,
+) -> Path | None:
+    """Resolve the worker script path within the project root."""
+    candidate = (
+        Path(worker_script)
+        if worker_script is not None
+        else _DEFAULT_WORKER_SCRIPT
+    )
+    if not candidate.is_absolute():
+        candidate = (project_root / candidate).resolve()
+    else:
+        candidate = candidate.expanduser().resolve()
+
+    try:
+        candidate.relative_to(project_root)
+    except ValueError:
+        _console.print(
+            "[red]Worker script must live under the project root so it can be "
+            f"synced:[/red] {candidate}"
+        )
+        return None
+
+    if not candidate.exists():
+        _console.print(f"[red]Worker script not found:[/red] {candidate}")
+        return None
+
+    return candidate
+
+
 # ---------------------------------------------------------------------------
 # Internal: cluster submission
 # ---------------------------------------------------------------------------
@@ -620,6 +653,7 @@ def submit_job(
     script_args: list[str] | None = None,
     sync: bool = True,
     dependency: str | None = None,
+    worker_script: Path | str | None = None,
 ) -> str | None:
     """Submit a Python script as a SLURM job.
 
@@ -639,6 +673,7 @@ def submit_job(
         sync: Whether to sync code before submission.
         dependency: Optional SLURM dependency expression (for example,
             ``afterok:12345``).
+        worker_script: Optional worker script path relative to the project root.
 
     Returns:
         Job ID if submission succeeded, None otherwise.
@@ -678,6 +713,7 @@ def submit_job(
         env_vars=env_vars,
         sync=False,
         dependency=dependency,
+        worker_script=worker_script,
     )
 
 
@@ -696,6 +732,7 @@ def submit_command(
     env_vars: dict[str, str] | None = None,
     sync: bool = False,
     dependency: str | None = None,
+    worker_script: Path | str | None = None,
 ) -> str | None:
     """Submit a shell command as a SLURM job.
 
@@ -713,6 +750,7 @@ def submit_command(
         env_vars: Extra environment variables to export.
         sync: Whether to sync before submission.
         dependency: Optional SLURM dependency expression.
+        worker_script: Optional worker script path relative to the project root.
 
     Returns:
         Job ID if submission succeeded, None otherwise.
@@ -728,6 +766,30 @@ def submit_command(
     remote_log_dir = f"{remote_base}/{log_dir}"
     _ssh_run(f"mkdir -p '{remote_log_dir}'")
 
+    resolved_worker = _resolve_worker_script(local_project_root, worker_script)
+    if resolved_worker is None:
+        return None
+
+    try:
+        remote_worker = (
+            f"{remote_base}/"
+            f"{resolved_worker.relative_to(local_project_root).as_posix()}"
+        )
+    except ValueError:
+        _console.print(
+            "[red]Worker script must live under the project root so it can be "
+            f"synced:[/red] {resolved_worker}"
+        )
+        return None
+
+    command_tokens = shlex.split(command.strip())
+    if not command_tokens:
+        _console.print("[red]Command is empty[/red]")
+        return None
+    if any(token in {"&&", "||", "|", ";", ">", ">>", "<"} for token in command_tokens):
+        _console.print("[red]Unsupported shell operators are not allowed[/red]")
+        return None
+
     mail_user = os.getenv("CLUSTER_EMAIL", "")
     sbatch = _build_sbatch_base(
         partition,
@@ -742,24 +804,20 @@ def submit_command(
         dependency,
     )
 
-    env_parts: list[str] = []
+    env_parts: dict[str, str] = {}
     if texlive:
-        env_parts.append("TEXLIVE=1")
+        env_parts["TEXLIVE"] = "1"
+    env_parts["PROJECT_DIR"] = remote_base
     if env_vars:
-        for key, value in env_vars.items():
-            env_parts.append(f"{key}={value}")
+        env_parts.update(env_vars)
     if env_parts:
-        sbatch.append(f"--export=ALL,{','.join(env_parts)}")
+        exports = ",".join(
+            f"{key}={value}" for key, value in env_parts.items()
+        )
+        sbatch.append(f"--export=ALL,{exports}")
 
-    wrapper = f"""#!/bin/bash
-eval "$(conda shell.bash hook)"
-conda activate "{remote_base}/conda_envs/cluster-kit"
-cd "{remote_base}"
-{command}
-"""
-
-    sbatch.append("--wrap")
-    sbatch.append(wrapper)
+    sbatch.append(remote_worker)
+    sbatch.extend(command_tokens)
 
     full_cmd = f"cd {remote_base} && {' '.join(shlex.quote(s) for s in sbatch)}"
     return _ssh_submit(full_cmd)

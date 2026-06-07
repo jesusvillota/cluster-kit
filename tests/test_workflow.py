@@ -36,6 +36,7 @@ jobs:
 
     assert plan.mode == "chain"
     assert len(plan.stages) == 1
+    assert plan.worker_script == "runnables/slurm/worker.slurm"
     job = plan.stages[0].jobs[0]
     assert job.name == "First_job"
     assert job.partition == "cpu_long"
@@ -62,8 +63,28 @@ stages:
     plan = parse_workflow_file(workflow)
 
     assert plan.mode == "stages"
+    assert plan.worker_script == "runnables/slurm/worker.slurm"
     assert plan.stages[0].name == "build"
     assert plan.stages[0].jobs[0].submit_command == "uv run src/build.py"
+
+
+def test_parse_yaml_custom_worker_script(tmp_path: Path) -> None:
+    workflow = _write_workflow(
+        tmp_path,
+        '''
+name: custom-worker
+worker_script: runnables/slurm/custom_worker.slurm
+sync: false
+
+jobs:
+  - command: |
+      uv run src/custom.py --run-from cluster
+''',
+    )
+
+    plan = parse_workflow_file(workflow)
+
+    assert plan.worker_script == "runnables/slurm/custom_worker.slurm"
 
 
 def test_rejects_non_uv_run_command(tmp_path: Path) -> None:
@@ -107,6 +128,8 @@ jobs:
     assert job_ids == ["101", "102"]
     assert submitted[0]["dependency"] is None
     assert submitted[1]["dependency"] == "afterok:101"
+    assert submitted[0]["worker_script"] == "runnables/slurm/worker.slurm"
+    assert submitted[1]["worker_script"] == "runnables/slurm/worker.slurm"
     assert submitted[0]["command"] == "uv run src/one.py"
     assert submitted[1]["partition"] == "cpu_large"
 
@@ -154,7 +177,33 @@ stages:
     assert submitted[0]["dependency"] is None
     assert submitted[1]["dependency"] is None
     assert submitted[2]["dependency"] is None
+    assert submitted[0]["worker_script"] == "runnables/slurm/worker.slurm"
     assert waited_for == [["201", "202"]]
+
+
+def test_submit_workflow_uses_custom_worker_script(tmp_path: Path) -> None:
+    workflow = _write_workflow(
+        tmp_path,
+        '''
+name: custom-worker-demo
+worker_script: runnables/slurm/custom_worker.slurm
+sync: false
+
+jobs:
+  - command: |
+      uv run src/a.py --run-from cluster
+''',
+    )
+    submitted: list[dict[str, object]] = []
+
+    def fake_submit(command: str, **kwargs: object) -> str:
+        submitted.append({"command": command, **kwargs})
+        return "401"
+
+    with patch("cluster_kit.workflow.runner.submit_command", side_effect=fake_submit):
+        submit_workflow(workflow)
+
+    assert submitted[0]["worker_script"] == "runnables/slurm/custom_worker.slurm"
 
 
 def test_submit_stages_sequential_stage_chains_within_stage(tmp_path: Path) -> None:
@@ -186,6 +235,7 @@ stages:
 
     assert submitted[0]["dependency"] is None
     assert submitted[1]["dependency"] == "afterok:301"
+    assert submitted[0]["worker_script"] == "runnables/slurm/worker.slurm"
 
 
 def test_dry_run_returns_synthetic_ids_without_submission(tmp_path: Path) -> None:

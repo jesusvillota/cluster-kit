@@ -85,6 +85,7 @@ class WorkflowPlan:
     mode: str
     dependency: str
     project_root: Path
+    worker_script: str
     sync: bool
     stages: tuple[WorkflowStage, ...]
 
@@ -114,6 +115,11 @@ def parse_workflow_file(path: Path | str) -> WorkflowPlan:
     else:
         project_root = project_root.resolve()
 
+    worker_script = _as_string(
+        raw.get("worker_script"),
+        "runnables/slurm/worker.slurm",
+    ).strip() or "runnables/slurm/worker.slurm"
+
     sync = _as_bool(raw.get("sync"), True)
     defaults = raw.get("defaults", {})
     if defaults is not None and not isinstance(defaults, dict):
@@ -128,6 +134,7 @@ def parse_workflow_file(path: Path | str) -> WorkflowPlan:
         mode=mode,
         dependency=dependency,
         project_root=project_root,
+        worker_script=worker_script,
         sync=sync,
         stages=tuple(stages),
     )
@@ -140,6 +147,7 @@ def submit_workflow(
     project_root: Path | str | None = None,
     sync: bool | None = None,
     dependency: str | None = None,
+    worker_script: Path | str | None = None,
 ) -> list[str]:
     """Submit a workflow and return submitted job IDs.
 
@@ -160,6 +168,10 @@ def submit_workflow(
                 f"dependency must be one of {sorted(_DEPENDENCY_MODES)}"
             )
         plan = _replace_plan_dependency(plan, dependency)
+    if worker_script is not None:
+        worker_script_value = _as_string(worker_script, "").strip()
+        if worker_script_value:
+            plan = _replace_plan_worker_script(plan, worker_script_value)
 
     _render_plan(plan, dry_run=dry_run)
     if plan.sync and not dry_run:
@@ -186,6 +198,7 @@ def submit_workflow(
                 stage_index,
                 job_index,
                 dependency_expr,
+                plan.worker_script,
                 dry_run,
             )
             job_ids.append(job_id)
@@ -381,6 +394,7 @@ def _submit_or_preview_job(
     stage_index: int,
     job_index: int,
     dependency: str | None,
+    worker_script: str,
     dry_run: bool,
 ) -> str:
     if dry_run:
@@ -404,6 +418,7 @@ def _submit_or_preview_job(
         texlive=job.texlive,
         sync=False,
         dependency=dependency,
+        worker_script=worker_script,
     )
     if not job_id:
         raise WorkflowError(f"failed to submit job {job.name}")
@@ -512,7 +527,8 @@ def _render_plan(plan: WorkflowPlan, *, dry_run: bool) -> None:
         f"[cyan]Mode:[/cyan] {plan.mode}  "
         f"[cyan]Dependency:[/cyan] {plan.dependency}  "
         f"[cyan]Sync:[/cyan] {'no' if dry_run else plan.sync}  "
-        f"[cyan]Project:[/cyan] {plan.project_root}"
+        f"[cyan]Project:[/cyan] {plan.project_root}\n"
+        f"[cyan]Worker:[/cyan] {plan.worker_script}"
     )
 
 
@@ -563,17 +579,50 @@ def _as_int(*values: Any) -> int:
 
 def _replace_plan_project_root(plan: WorkflowPlan, project_root: Path) -> WorkflowPlan:
     return WorkflowPlan(
-        plan.name, plan.mode, plan.dependency, project_root, plan.sync, plan.stages
+        plan.name,
+        plan.mode,
+        plan.dependency,
+        project_root,
+        plan.worker_script,
+        plan.sync,
+        plan.stages,
     )
 
 
 def _replace_plan_sync(plan: WorkflowPlan, sync: bool) -> WorkflowPlan:
     return WorkflowPlan(
-        plan.name, plan.mode, plan.dependency, plan.project_root, sync, plan.stages
+        plan.name,
+        plan.mode,
+        plan.dependency,
+        plan.project_root,
+        plan.worker_script,
+        sync,
+        plan.stages,
     )
 
 
 def _replace_plan_dependency(plan: WorkflowPlan, dependency: str) -> WorkflowPlan:
     return WorkflowPlan(
-        plan.name, plan.mode, dependency, plan.project_root, plan.sync, plan.stages
+        plan.name,
+        plan.mode,
+        dependency,
+        plan.project_root,
+        plan.worker_script,
+        plan.sync,
+        plan.stages,
+    )
+
+
+def _replace_plan_worker_script(
+    plan: WorkflowPlan,
+    worker_script: str,
+) -> WorkflowPlan:
+    return WorkflowPlan(
+        plan.name,
+        plan.mode,
+        plan.dependency,
+        plan.project_root,
+        worker_script,
+        plan.sync,
+        plan.stages,
     )

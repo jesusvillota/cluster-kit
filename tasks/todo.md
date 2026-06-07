@@ -1,14 +1,14 @@
-# Workflow Runner Implementation
+# Worker-Backed Workflow Submission
 
-- [x] Extend launcher submission with SLURM dependency support.
-- [x] Add generic command submission for workflow jobs.
-- [x] Add YAML/TOML workflow parser supporting `chain` and `stages` modes.
-- [x] Wire `cluster-kit workflow run <file>` into the CLI.
-- [x] Add parser, CLI, and dependency-chain tests.
-- [x] Run ruff and pytest.
+- [x] Resolve `runnables/slurm/worker.slurm` under `project_root` by default.
+- [x] Support workflow-level and CLI worker-script overrides.
+- [x] Route `submit_command` and `submit_job` through worker scripts.
+- [x] Add tests for default worker lookup, overrides, and submission output.
+- [x] Run `ruff` and `pytest`.
 
 ## Review
 
-Implemented `workflow run` with YAML-first workflows, chain mode, stages mode,
-SLURM dependencies, dry-run support, README usage examples, and tests.
-Verification: `uv run ruff check` and `uv run pytest` both pass.
+Implemented worker-script-backed SLURM submission so workflow jobs and direct
+launches both use the project’s `worker.slurm` bootstrap by default. The
+workflow CLI now accepts `--worker-script` for explicit overrides. Verification:
+`uv run ruff check` and `uv run pytest` both pass.
