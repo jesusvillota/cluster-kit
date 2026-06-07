@@ -111,7 +111,7 @@ jobs:
     assert submitted[1]["partition"] == "cpu_large"
 
 
-def test_submit_stages_parallel_jobs_depend_on_previous_stage(tmp_path: Path) -> None:
+def test_submit_stages_parallel_jobs_waits_between_stages(tmp_path: Path) -> None:
     workflow = _write_workflow(
         tmp_path,
         '''
@@ -137,18 +137,24 @@ stages:
 ''',
     )
     submitted: list[dict[str, object]] = []
+    waited_for: list[list[str]] = []
 
     def fake_submit(command: str, **kwargs: object) -> str:
         submitted.append({"command": command, **kwargs})
         return str(200 + len(submitted))
 
-    with patch("cluster_kit.workflow.runner.submit_command", side_effect=fake_submit):
+    def fake_wait(job_ids: list[str], mode: str) -> None:
+        waited_for.append(job_ids)
+
+    with patch("cluster_kit.workflow.runner.submit_command", side_effect=fake_submit), \
+         patch("cluster_kit.workflow.runner._wait_for_jobs", side_effect=fake_wait):
         job_ids = submit_workflow(workflow)
 
     assert job_ids == ["201", "202", "203"]
     assert submitted[0]["dependency"] is None
     assert submitted[1]["dependency"] is None
-    assert submitted[2]["dependency"] == "afterok:201:202"
+    assert submitted[2]["dependency"] is None
+    assert waited_for == [["201", "202"]]
 
 
 def test_submit_stages_sequential_stage_chains_within_stage(tmp_path: Path) -> None:
