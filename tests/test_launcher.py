@@ -45,9 +45,9 @@ def test_submit_command_uses_project_worker_script(tmp_path: Path) -> None:
     assert "--wrap" not in captured[0]
     assert "/remote/project/runnables/slurm/worker.slurm" in captured[0]
     assert "PROJECT_DIR=/remote/project" in captured[0]
-    assert "uv" in captured[0]
-    assert "run" in captured[0]
+    assert "python" in captured[0]
     assert "src/demo.py" in captured[0]
+    assert "alpha beta" in captured[0]
 
 
 def test_submit_command_returns_none_when_worker_missing(tmp_path: Path) -> None:

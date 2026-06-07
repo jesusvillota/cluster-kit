@@ -790,6 +790,12 @@ def submit_command(
         _console.print("[red]Unsupported shell operators are not allowed[/red]")
         return None
 
+    if len(command_tokens) >= 2 and command_tokens[:2] == ["uv", "run"]:
+        if len(command_tokens) >= 3 and command_tokens[2] == "python":
+            command_tokens = command_tokens[2:]
+        else:
+            command_tokens = ["python"] + command_tokens[2:]
+
     mail_user = os.getenv("CLUSTER_EMAIL", "")
     sbatch = _build_sbatch_base(
         partition,
