@@ -308,7 +308,13 @@ class CodeDeployer:
             console.print(f"\n[cyan]Syncing[/cyan] {dir_name}/...")
 
             source = f"{local_base_str}/{dir_name}/"
-            dest = f"{self._ssh_host}:{self._remote_base}/{dir_name}/"
+            if is_windows:
+                # scp on Windows (SFTP protocol) requires the destination parent
+                # to exist.  Point scp at the remote base and let it create the
+                # leaf directory from the source name.
+                dest = f"{self._ssh_host}:{self._remote_base}/"
+            else:
+                dest = f"{self._ssh_host}:{self._remote_base}/{dir_name}/"
 
             success = runner.sync(source, dest, show_progress=self.verbose)
 

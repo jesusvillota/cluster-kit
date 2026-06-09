@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
+import sys
+from pathlib import Path, PurePosixPath
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from cluster_kit.sync.code import CodeDeployer
 from cluster_kit.sync.transfer import (
     ParsedPath,
     TransferDirection,
@@ -259,3 +261,74 @@ class TestClusterConnection:
     def test_connection_timeout(self, mock_run, mock_timeout, mock_host):
         result = ClusterConnection.test_connection(verbose=False)
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# CodeDeployer.sync_directories — Windows SCP destination
+# ---------------------------------------------------------------------------
+
+
+class TestCodeDeployerSyncDirectories:
+    @patch("cluster_kit.sync.code.RsyncRunner", autospec=True)
+    @patch("cluster_kit.sync.code.ScpRunner", autospec=True)
+    @patch("cluster_kit.sync.code.get_cluster_host")
+    @patch("cluster_kit.sync.code.get_remote_base")
+    @patch("cluster_kit.sync.code._find_project_root")
+    @patch.object(sys, "platform", "win32")
+    def test_windows_scp_dest_is_remote_base(
+        self,
+        mock_find,
+        mock_remote,
+        mock_host,
+        mock_scp_cls,
+        mock_rsync_cls,
+    ):
+        mock_find.return_value = Path("/fake/local")
+        mock_remote.return_value = PurePosixPath("/fake/remote")
+        mock_host.return_value = "test-cluster"
+
+        mock_scp = MagicMock()
+        mock_scp.sync.return_value = True
+        mock_scp_cls.return_value = mock_scp
+
+        deployer = CodeDeployer(directories=["src", "runnables"])
+        result = deployer.sync_directories()
+
+        assert result is True
+        assert mock_scp.sync.call_count == 2
+        # dest should be the remote base (parent), not base/src/ or base/runnables/
+        assert mock_scp.sync.call_args_list[0][0][1] == "test-cluster:/fake/remote/"
+        assert mock_scp.sync.call_args_list[1][0][1] == "test-cluster:/fake/remote/"
+
+    @patch("cluster_kit.sync.code.RsyncRunner", autospec=True)
+    @patch("cluster_kit.sync.code.ScpRunner", autospec=True)
+    @patch("cluster_kit.sync.code.get_cluster_host")
+    @patch("cluster_kit.sync.code.get_remote_base")
+    @patch("cluster_kit.sync.code._find_project_root")
+    @patch.object(sys, "platform", "darwin")
+    def test_unix_rsync_dest_includes_dir_name(
+        self,
+        mock_find,
+        mock_remote,
+        mock_host,
+        mock_scp_cls,
+        mock_rsync_cls,
+    ):
+        mock_find.return_value = Path("/fake/local")
+        mock_remote.return_value = PurePosixPath("/fake/remote")
+        mock_host.return_value = "test-cluster"
+
+        mock_rsync = MagicMock()
+        mock_rsync.sync.return_value = True
+        mock_rsync_cls.return_value = mock_rsync
+
+        deployer = CodeDeployer(directories=["src", "runnables"])
+        result = deployer.sync_directories()
+
+        assert result is True
+        assert mock_rsync.sync.call_count == 2
+        # dest should include the directory name
+        dest0 = mock_rsync.sync.call_args_list[0][0][1]
+        dest1 = mock_rsync.sync.call_args_list[1][0][1]
+        assert dest0 == "test-cluster:/fake/remote/src/"
+        assert dest1 == "test-cluster:/fake/remote/runnables/"
