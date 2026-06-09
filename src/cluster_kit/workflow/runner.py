@@ -1,18 +1,16 @@
 """YAML/TOML-defined SLURM workflow submission.
 
-Stages run sequentially — each stage must finish before the next begins —
-avoiding cluster submit limits. Jobs within a parallel stage are submitted
-together; jobs within a sequential stage (``parallel: false``) are submitted
-one at a time with SLURM dependencies.
+Stages are submitted up front with SLURM dependencies, so the local machine
+does not need to poll the cluster after initial submission. Jobs within a
+parallel stage share the same previous-stage dependency; jobs within a
+sequential stage (``parallel: false``) are chained one at a time.
 """
 
 from __future__ import annotations
 
 import re
 import shlex
-import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,7 +20,6 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
-from cluster_kit.config import get_cluster_host
 from cluster_kit.launch.launcher import PARTITION_DEFAULTS, submit_command
 from cluster_kit.sync.code import CodeDeployer
 
@@ -151,8 +148,9 @@ def submit_workflow(
 ) -> list[str]:
     """Submit a workflow and return submitted job IDs.
 
-    Stages run sequentially — each stage must finish before the next begins.
-    In ``dry_run`` mode no SSH calls are made; synthetic job IDs are returned.
+    Stages are submitted up front with SLURM dependencies so the scheduler,
+    not the local process, enforces stage order. In ``dry_run`` mode no SSH
+    calls are made; synthetic job IDs are returned.
     """
     plan = parse_workflow_file(path)
     if project_root is not None:
@@ -181,14 +179,20 @@ def submit_workflow(
             raise WorkflowError("code sync failed; workflow submission aborted")
 
     job_ids: list[str] = []
+    previous_stage_ids: list[str] = []
 
     for stage_index, stage in enumerate(plan.stages, start=1):
         stage_ids: list[str] = []
         previous_job_id: str | None = None
         for job_index, job in enumerate(stage.jobs, start=1):
+            stage_dependencies = (
+                previous_stage_ids
+                if stage.parallel or previous_job_id is None
+                else []
+            )
             dependency_expr = _dependency_expression(
                 plan.dependency,
-                [],
+                stage_dependencies,
                 previous_job_id if not stage.parallel else None,
             )
             job_id = _submit_or_preview_job(
@@ -205,8 +209,7 @@ def submit_workflow(
             stage_ids.append(job_id)
             previous_job_id = job_id
 
-        if not dry_run and stage_index < len(plan.stages):
-            _wait_for_jobs(stage_ids, plan.dependency)
+        previous_stage_ids = stage_ids
 
     _console.print(
         f"[green][OK][/green] Submitted workflow [bold]{plan.name}[/bold] "
@@ -427,85 +430,6 @@ def _submit_or_preview_job(
         + (f" depends on {dependency}" if dependency else "")
     )
     return job_id
-
-
-def _wait_for_jobs(job_ids: list[str], mode: str, check_interval: int = 60) -> None:
-    """Poll SLURM via SSH until all jobs complete.
-
-    When *mode* is ``"afterok"``, raises ``WorkflowError`` on the first
-    failure.  Otherwise (``"afterany"``) all jobs are waited out regardless of
-    exit status.
-    """
-    host = get_cluster_host()
-    ids_str = ",".join(job_ids)
-    _console.print(f"  [cyan]Waiting for {len(job_ids)} job(s) to finish...[/cyan]")
-
-    remaining = set(job_ids)
-
-    while remaining:
-        try:
-            result = subprocess.run(
-                [
-                    "ssh",
-                    host,
-                    f"squeue -j {ids_str} -o '%i %T' --noheader 2>/dev/null",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-        except (subprocess.TimeoutExpired, Exception):
-            time.sleep(check_interval)
-            continue
-
-        active_ids: set[str] = set()
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            parts = line.split(None, 1)
-            if parts:
-                active_ids.add(parts[0])
-
-        newly_done = remaining - active_ids
-        if newly_done and mode == "afterok":
-            for jid in newly_done:
-                if _job_failed(jid, host):
-                    raise WorkflowError(
-                        f"job {jid} failed; aborting workflow"
-                    )
-
-        remaining = active_ids
-        if remaining:
-            _console.print(
-                f"  [dim]{len(remaining)} job(s) still active...[/dim]"
-            )
-            time.sleep(check_interval)
-
-    _console.print("  [green]Stage completed.[/green]")
-
-
-def _job_failed(job_id: str, host: str) -> bool:
-    """Return ``True`` if the job's final state is not COMPLETED."""
-    try:
-        result = subprocess.run(
-            [
-                "ssh",
-                host,
-                f"sacct -j {job_id} --format State --noheader --parsable2"
-                " 2>/dev/null",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        for line in result.stdout.splitlines():
-            state = line.strip()
-            if state and state not in ("COMPLETED", "CD", ""):
-                return True
-        return False
-    except Exception:
-        return False
 
 
 def _render_plan(plan: WorkflowPlan, *, dry_run: bool) -> None:

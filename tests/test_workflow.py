@@ -134,7 +134,9 @@ jobs:
     assert submitted[1]["partition"] == "cpu_large"
 
 
-def test_submit_stages_parallel_jobs_waits_between_stages(tmp_path: Path) -> None:
+def test_submit_stages_parallel_jobs_use_previous_stage_dependencies(
+    tmp_path: Path,
+) -> None:
     workflow = _write_workflow(
         tmp_path,
         '''
@@ -160,25 +162,19 @@ stages:
 ''',
     )
     submitted: list[dict[str, object]] = []
-    waited_for: list[list[str]] = []
 
     def fake_submit(command: str, **kwargs: object) -> str:
         submitted.append({"command": command, **kwargs})
         return str(200 + len(submitted))
 
-    def fake_wait(job_ids: list[str], mode: str) -> None:
-        waited_for.append(job_ids)
-
-    with patch("cluster_kit.workflow.runner.submit_command", side_effect=fake_submit), \
-         patch("cluster_kit.workflow.runner._wait_for_jobs", side_effect=fake_wait):
+    with patch("cluster_kit.workflow.runner.submit_command", side_effect=fake_submit):
         job_ids = submit_workflow(workflow)
 
     assert job_ids == ["201", "202", "203"]
     assert submitted[0]["dependency"] is None
     assert submitted[1]["dependency"] is None
-    assert submitted[2]["dependency"] is None
+    assert submitted[2]["dependency"] == "afterok:201:202"
     assert submitted[0]["worker_script"] == "runnables/slurm/worker.slurm"
-    assert waited_for == [["201", "202"]]
 
 
 def test_submit_workflow_uses_custom_worker_script(tmp_path: Path) -> None:
@@ -236,6 +232,51 @@ stages:
     assert submitted[0]["dependency"] is None
     assert submitted[1]["dependency"] == "afterok:301"
     assert submitted[0]["worker_script"] == "runnables/slurm/worker.slurm"
+
+
+def test_submit_sequential_stage_keeps_previous_stage_dependency(
+    tmp_path: Path,
+) -> None:
+    workflow = _write_workflow(
+        tmp_path,
+        '''
+name: mixed-stages
+sync: false
+
+stages:
+  - name: build
+    parallel: true
+    jobs:
+      - command: |
+          uv run src/build_a.py --run-from cluster
+
+      - command: |
+          uv run src/build_b.py --run-from cluster
+
+  - name: report
+    parallel: false
+    jobs:
+      - command: |
+          uv run src/report_a.py --run-from cluster
+
+      - command: |
+          uv run src/report_b.py --run-from cluster
+''',
+    )
+    submitted: list[dict[str, object]] = []
+
+    def fake_submit(command: str, **kwargs: object) -> str:
+        submitted.append({"command": command, **kwargs})
+        return str(500 + len(submitted))
+
+    with patch("cluster_kit.workflow.runner.submit_command", side_effect=fake_submit):
+        job_ids = submit_workflow(workflow)
+
+    assert job_ids == ["501", "502", "503", "504"]
+    assert submitted[0]["dependency"] is None
+    assert submitted[1]["dependency"] is None
+    assert submitted[2]["dependency"] == "afterok:501:502"
+    assert submitted[3]["dependency"] == "afterok:503"
 
 
 def test_dry_run_returns_synthetic_ids_without_submission(tmp_path: Path) -> None:
