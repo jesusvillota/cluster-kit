@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -85,7 +85,7 @@ class ClusterConfig:
     Attributes:
         host: SSH alias or hostname for the cluster.
         user: Username on the remote cluster.
-        remote_base: Absolute path to the project root on the cluster.
+        remote_base: Absolute POSIX path to the project root on the cluster.
         ssh_key: Path to the SSH private key file.
         ssh_timeout: SSH connection timeout in seconds (1-300).
         sync_exclude: Comma-separated rsync exclude patterns.
@@ -94,7 +94,7 @@ class ClusterConfig:
 
     host: str
     user: str
-    remote_base: Path
+    remote_base: PurePosixPath
     ssh_key: Path
     ssh_timeout: int
     sync_exclude: str
@@ -192,7 +192,7 @@ def load_config(
     return ClusterConfig(
         host=host,
         user=user,
-        remote_base=Path(remote_base_raw).expanduser(),
+        remote_base=PurePosixPath(remote_base_raw),
         ssh_key=Path(ssh_key_raw).expanduser(),
         ssh_timeout=ssh_timeout,
         sync_exclude=sync_exclude,
@@ -306,7 +306,7 @@ def get_cluster_user() -> str:
     return _get_config().user
 
 
-def get_remote_base() -> Path:
+def get_remote_base() -> PurePosixPath:
     """Return the configured remote base path."""
     return _get_config().remote_base
 

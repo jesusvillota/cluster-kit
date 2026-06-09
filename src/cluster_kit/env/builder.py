@@ -11,7 +11,7 @@ import re
 import subprocess
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from rich import box
@@ -190,8 +190,9 @@ def generate_slurm_script(
     partition: str = "cpu_express",
 ) -> str:
     """Generate conda_env.slurm content with resolved cluster paths."""
-    remote_base_str = str(remote_base).rstrip("/")
-    conda_base = str(Path(remote_base_str).parent)
+    remote_base_path = PurePosixPath(str(remote_base).rstrip("/"))
+    remote_base_str = remote_base_path.as_posix()
+    conda_base = remote_base_path.parent.as_posix()
 
     return _CONDA_ENV_SLURM.format(
         project_name=project_name,

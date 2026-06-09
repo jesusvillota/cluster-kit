@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
 import pytest
@@ -104,7 +104,7 @@ class TestLoadConfigEnvVars:
         cfg = load_config(env_file=Path("/nonexistent/.env"))
         assert cfg.host == "prod-cluster"
         assert cfg.user == "produser"
-        assert cfg.remote_base == Path("/opt/project")
+        assert cfg.remote_base == PurePosixPath("/opt/project")
         assert cfg.ssh_key == Path("/tmp/test_key")
         assert cfg.ssh_timeout == 60
         assert cfg.sync_exclude == ".git,node_modules"
@@ -132,7 +132,7 @@ class TestMultiClusterProfiles:
         os.environ["CLUSTER_DEV_HOST"] = "dev-host"
 
         cfg = load_config(env_profile="dev")
-        assert cfg.remote_base == Path("/dev/path")
+        assert cfg.remote_base == PurePosixPath("/dev/path")
         assert cfg.host == "dev-host"
 
     def test_profile_via_cluster_env(self, clean_env):
@@ -142,7 +142,7 @@ class TestMultiClusterProfiles:
         os.environ["CLUSTER_STAGING_HOST"] = "staging-host"
 
         cfg = load_config()
-        assert cfg.remote_base == Path("/staging/path")
+        assert cfg.remote_base == PurePosixPath("/staging/path")
         assert cfg.host == "staging-host"
 
     def test_profile_partial_override(self, clean_env):
@@ -152,7 +152,7 @@ class TestMultiClusterProfiles:
         # CLUSTER_DEV_HOST not set — should fall back to default
 
         cfg = load_config(env_profile="dev")
-        assert cfg.remote_base == Path("/dev/path")
+        assert cfg.remote_base == PurePosixPath("/dev/path")
         assert cfg.host == "default-host"
 
 
@@ -169,12 +169,12 @@ class TestLoadConfigEnvFile:
             "CLUSTER_HOST=env-file-host\n"
         )
         cfg = load_config(env_file=env_file)
-        assert cfg.remote_base == Path("/from/env/file")
+        assert cfg.remote_base == PurePosixPath("/from/env/file")
         assert cfg.host == "env-file-host"
 
     def test_env_file_not_found_uses_env(self, minimal_env):
         cfg = load_config(env_file=Path("/nonexistent/.env"))
-        assert cfg.remote_base == Path("/mnt/slurm-beegfs/Users/test/project")
+        assert cfg.remote_base == PurePosixPath("/mnt/slurm-beegfs/Users/test/project")
 
 
 # ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ class TestValidateConfig:
         defaults = dict(
             host="cluster",
             user="testuser",
-            remote_base=Path("/absolute/path"),
+            remote_base=PurePosixPath("/absolute/path"),
             ssh_key=Path("/nonexistent/key"),
             ssh_timeout=30,
             sync_exclude="__pycache__,*.pyc",
@@ -215,7 +215,7 @@ class TestValidateConfig:
         assert any("CLUSTER_USER" in e for e in errors)
 
     def test_relative_remote_base(self):
-        cfg = self._make_config(remote_base=Path("relative/path"))
+        cfg = self._make_config(remote_base=PurePosixPath("relative/path"))
         errors = validate_config(cfg)
         assert any("CLUSTER_REMOTE_BASE" in e for e in errors)
 
@@ -255,7 +255,7 @@ class TestValidateConfigStrict:
         defaults = dict(
             host="cluster",
             user="testuser",
-            remote_base=Path("/absolute/path"),
+            remote_base=PurePosixPath("/absolute/path"),
             ssh_key=Path("/nonexistent/key"),
             ssh_timeout=30,
             sync_exclude="__pycache__,*.pyc",
