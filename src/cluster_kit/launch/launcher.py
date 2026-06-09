@@ -375,7 +375,7 @@ def _derive_log_dir(script_path: str, project_root: Path) -> str:
             else ["scripts"]
         )
 
-    return f"_logs/{'/'.join(rel_parts)}"
+    return f"_logs_/{'/'.join(rel_parts)}"
 
 
 def _needs_texlive(script_path: str) -> bool:
@@ -727,7 +727,7 @@ def submit_command(
     time: str = "04:00:00",
     qos: str | None = None,
     job_name: str = "cluster_workflow",
-    log_dir: str = "_logs/workflows",
+    log_dir: str = "_logs_/workflows",
     texlive: bool = False,
     env_vars: dict[str, str] | None = None,
     sync: bool = False,

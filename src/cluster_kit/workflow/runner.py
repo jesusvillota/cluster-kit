@@ -414,7 +414,7 @@ def _submit_or_preview_job(
         time=job.time,
         qos=job.qos,
         job_name=job.name,
-        log_dir=f"_logs/workflows/{plan.name}/{stage.name}",
+        log_dir=f"_logs_/workflows/{plan.name}/{stage.name}",
         texlive=job.texlive,
         sync=False,
         dependency=dependency,
