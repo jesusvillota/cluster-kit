@@ -208,17 +208,35 @@ cluster-kit launch test.py --run-from local
 
 ### `workflow run`
 
-Submit a YAML-defined sequence of raw `uv run` commands as SLURM jobs. Cluster
-Kit submits all jobs up front and uses SLURM dependencies, so your local machine
-does not need to poll or stay connected. TOML is still supported, but YAML is the
-recommended format.
+Launch a YAML-defined sequence of raw `uv run` commands as SLURM jobs. Cluster
+Kit pre-renders every job's sbatch command into an execution plan, uploads it to
+the cluster, and starts a detached orchestrator on the login node, so your local
+machine does not need to poll or stay connected. The orchestrator submits each
+job once its dependencies have completed, keeping the user's total queued job
+count (pending + running, including jobs submitted outside the workflow) below
+`max_concurrent` — so workflows with many more jobs than the association
+MaxSubmit/MaxJobs limit run end to end without `AssocMaxSubmitJobLimit` errors.
+TOML is still supported, but YAML is the recommended format.
 
 ```bash
 cluster-kit workflow run abnormal-volume.yaml
 
 # Validate the plan without submitting jobs
 cluster-kit workflow run abnormal-volume.yaml --dry-run
+
+# Check progress of the latest run / a specific run
+cluster-kit workflow status --latest
+cluster-kit workflow status abnormal-volume_20260611-153000 --log
+
+# Kill the orchestrator and scancel its active jobs
+cluster-kit workflow cancel --latest
 ```
+
+Each run gets a directory `<remote_base>/.cluster_kit/workflows/<run_id>/` on
+the cluster holding `plan.json`, `state.json` (updated every poll cycle),
+`orchestrator.log`, and `orchestrator.pid`. If the orchestrator dies, re-running
+`python3 <run_dir>/orchestrator.py <run_dir>/plan.json` on the login node
+resumes from the saved state.
 
 If you define `jobs:` at the top level, the workflow runs in chain mode. If you
 define `stages:`, the workflow runs in stages mode.
@@ -227,6 +245,8 @@ define `stages:`, the workflow runs in stages mode.
 name: abnormal-volume
 dependency: afterok
 sync: true
+max_concurrent: 4   # optional: max queued jobs at any time (default 4)
+poll_interval: 30   # optional: orchestrator poll cadence in seconds
 
 stages:
   - name: build-panels
@@ -260,6 +280,8 @@ stages:
 | `--project-root` | from file | Override local project root for sync |
 | `--no-sync` | `False` | Skip pre-submission code sync |
 | `--dependency` | from file | Override `afterok` or `afterany` |
+| `--max-concurrent` | file → `$CLUSTER_MAX_JOBS` → 4 | Max queued jobs at any time |
+| `--poll-interval` | file → 30 | Orchestrator poll cadence (seconds) |
 
 ### `serve`
 

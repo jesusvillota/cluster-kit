@@ -1,19 +1,55 @@
-"""Tests for YAML/TOML workflow parsing and dependency submission."""
+"""Tests for workflow parsing, execution-plan building, and orchestrated runs."""
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import patch
+from pathlib import Path, PurePosixPath
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cluster_kit.workflow import WorkflowError, parse_workflow_file, submit_workflow
+from cluster_kit.config import ConfigError
+from cluster_kit.workflow import (
+    WorkflowError,
+    build_execution_plan,
+    parse_workflow_file,
+    submit_workflow,
+)
+from cluster_kit.workflow.plan import (
+    compute_dependency_graph,
+    resolve_max_concurrent,
+    resolve_poll_interval,
+)
+
+REMOTE_BASE = "/remote/base"
 
 
-def _write_workflow(tmp_path: Path, content: str) -> Path:
+def _write_workflow(tmp_path: Path, content: str, *, worker: bool = True) -> Path:
     path = tmp_path / "workflow.yaml"
     path.write_text(content)
+    if worker:
+        worker_path = tmp_path / "runnables" / "slurm" / "worker.slurm"
+        worker_path.parent.mkdir(parents=True, exist_ok=True)
+        worker_path.write_text("#!/bin/bash\n")
     return path
+
+
+def _patch_config():
+    return patch.multiple(
+        "cluster_kit.workflow.plan",
+        get_remote_base=MagicMock(return_value=PurePosixPath(REMOTE_BASE)),
+        get_cluster_user=MagicMock(return_value="testuser"),
+    )
+
+
+def _build(workflow: Path, **kwargs):
+    plan = parse_workflow_file(workflow)
+    with _patch_config():
+        return build_execution_plan(plan, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Parsing
+# ---------------------------------------------------------------------------
 
 
 def test_parse_yaml_chain_workflow_strips_launcher_flags(tmp_path: Path) -> None:
@@ -101,7 +137,72 @@ jobs:
         parse_workflow_file(workflow)
 
 
-def test_submit_chain_uses_previous_job_dependency(tmp_path: Path) -> None:
+def test_parse_throttle_keys(tmp_path: Path) -> None:
+    workflow = _write_workflow(
+        tmp_path,
+        '''
+name: throttled
+max_concurrent: 3
+poll_interval: 15
+sync: false
+
+jobs:
+  - command: |
+      uv run src/a.py --run-from cluster
+''',
+    )
+
+    plan = parse_workflow_file(workflow)
+
+    assert plan.max_concurrent == 3
+    assert plan.poll_interval == 15
+
+
+def test_parse_rejects_invalid_max_concurrent(tmp_path: Path) -> None:
+    workflow = _write_workflow(
+        tmp_path,
+        '''
+max_concurrent: 0
+
+jobs:
+  - command: |
+      uv run src/a.py --run-from cluster
+''',
+    )
+
+    with pytest.raises(WorkflowError, match="max_concurrent"):
+        parse_workflow_file(workflow)
+
+
+def test_parse_toml_workflow_still_works(tmp_path: Path) -> None:
+    path = tmp_path / "workflow.toml"
+    path.write_text(
+        '''
+name = "compat-demo"
+mode = "chain"
+
+[[jobs]]
+command = "uv run src/compat.py --run-from cluster"
+'''
+    )
+
+    plan = parse_workflow_file(path)
+
+    assert plan.mode == "chain"
+    assert plan.stages[0].jobs[0].submit_command == "uv run src/compat.py"
+
+
+# ---------------------------------------------------------------------------
+# Dependency graph
+# ---------------------------------------------------------------------------
+
+
+def _deps(workflow: Path) -> list[list[int]]:
+    plan = parse_workflow_file(workflow)
+    return [deps for _, _, deps in compute_dependency_graph(plan)]
+
+
+def test_chain_jobs_depend_on_previous_job(tmp_path: Path) -> None:
     workflow = _write_workflow(
         tmp_path,
         '''
@@ -110,38 +211,24 @@ sync: false
 
 jobs:
   - command: |
-      uv run src/one.py --run-from cluster --partition cpu_shared
+      uv run src/one.py --run-from cluster
 
   - command: |
-      uv run src/two.py --run-from cluster --partition cpu_large
+      uv run src/two.py --run-from cluster
+
+  - command: |
+      uv run src/three.py --run-from cluster
 ''',
     )
-    submitted: list[dict[str, object]] = []
 
-    def fake_submit(command: str, **kwargs: object) -> str:
-        submitted.append({"command": command, **kwargs})
-        return str(100 + len(submitted))
-
-    with patch("cluster_kit.workflow.runner.submit_command", side_effect=fake_submit):
-        job_ids = submit_workflow(workflow)
-
-    assert job_ids == ["101", "102"]
-    assert submitted[0]["dependency"] is None
-    assert submitted[1]["dependency"] == "afterok:101"
-    assert submitted[0]["worker_script"] == "runnables/slurm/worker.slurm"
-    assert submitted[1]["worker_script"] == "runnables/slurm/worker.slurm"
-    assert submitted[0]["command"] == "uv run src/one.py"
-    assert submitted[1]["partition"] == "cpu_large"
+    assert _deps(workflow) == [[], [0], [1]]
 
 
-def test_submit_stages_parallel_jobs_use_previous_stage_dependencies(
-    tmp_path: Path,
-) -> None:
+def test_parallel_stage_jobs_depend_on_full_previous_stage(tmp_path: Path) -> None:
     workflow = _write_workflow(
         tmp_path,
         '''
 name: staged-demo
-dependency: afterok
 sync: false
 
 stages:
@@ -161,48 +248,11 @@ stages:
           uv run src/plot.py --run-from cluster
 ''',
     )
-    submitted: list[dict[str, object]] = []
 
-    def fake_submit(command: str, **kwargs: object) -> str:
-        submitted.append({"command": command, **kwargs})
-        return str(200 + len(submitted))
-
-    with patch("cluster_kit.workflow.runner.submit_command", side_effect=fake_submit):
-        job_ids = submit_workflow(workflow)
-
-    assert job_ids == ["201", "202", "203"]
-    assert submitted[0]["dependency"] is None
-    assert submitted[1]["dependency"] is None
-    assert submitted[2]["dependency"] == "afterok:201:202"
-    assert submitted[0]["worker_script"] == "runnables/slurm/worker.slurm"
+    assert _deps(workflow) == [[], [], [0, 1]]
 
 
-def test_submit_workflow_uses_custom_worker_script(tmp_path: Path) -> None:
-    workflow = _write_workflow(
-        tmp_path,
-        '''
-name: custom-worker-demo
-worker_script: runnables/slurm/custom_worker.slurm
-sync: false
-
-jobs:
-  - command: |
-      uv run src/a.py --run-from cluster
-''',
-    )
-    submitted: list[dict[str, object]] = []
-
-    def fake_submit(command: str, **kwargs: object) -> str:
-        submitted.append({"command": command, **kwargs})
-        return "401"
-
-    with patch("cluster_kit.workflow.runner.submit_command", side_effect=fake_submit):
-        submit_workflow(workflow)
-
-    assert submitted[0]["worker_script"] == "runnables/slurm/custom_worker.slurm"
-
-
-def test_submit_stages_sequential_stage_chains_within_stage(tmp_path: Path) -> None:
+def test_sequential_stage_chains_within_stage(tmp_path: Path) -> None:
     workflow = _write_workflow(
         tmp_path,
         '''
@@ -220,23 +270,11 @@ stages:
           uv run src/b.py --run-from cluster
 ''',
     )
-    submitted: list[dict[str, object]] = []
 
-    def fake_submit(command: str, **kwargs: object) -> str:
-        submitted.append({"command": command, **kwargs})
-        return str(300 + len(submitted))
-
-    with patch("cluster_kit.workflow.runner.submit_command", side_effect=fake_submit):
-        submit_workflow(workflow)
-
-    assert submitted[0]["dependency"] is None
-    assert submitted[1]["dependency"] == "afterok:301"
-    assert submitted[0]["worker_script"] == "runnables/slurm/worker.slurm"
+    assert _deps(workflow) == [[], [0]]
 
 
-def test_submit_sequential_stage_keeps_previous_stage_dependency(
-    tmp_path: Path,
-) -> None:
+def test_sequential_stage_keeps_previous_stage_dependency(tmp_path: Path) -> None:
     workflow = _write_workflow(
         tmp_path,
         '''
@@ -263,23 +301,203 @@ stages:
           uv run src/report_b.py --run-from cluster
 ''',
     )
-    submitted: list[dict[str, object]] = []
 
-    def fake_submit(command: str, **kwargs: object) -> str:
-        submitted.append({"command": command, **kwargs})
-        return str(500 + len(submitted))
-
-    with patch("cluster_kit.workflow.runner.submit_command", side_effect=fake_submit):
-        job_ids = submit_workflow(workflow)
-
-    assert job_ids == ["501", "502", "503", "504"]
-    assert submitted[0]["dependency"] is None
-    assert submitted[1]["dependency"] is None
-    assert submitted[2]["dependency"] == "afterok:501:502"
-    assert submitted[3]["dependency"] == "afterok:503"
+    assert _deps(workflow) == [[], [], [0, 1], [2]]
 
 
-def test_dry_run_returns_synthetic_ids_without_submission(tmp_path: Path) -> None:
+# ---------------------------------------------------------------------------
+# Execution plan
+# ---------------------------------------------------------------------------
+
+
+def test_execution_plan_renders_full_sbatch_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CLUSTER_EMAIL", raising=False)
+    monkeypatch.delenv("CLUSTER_MAX_JOBS", raising=False)
+    workflow = _write_workflow(
+        tmp_path,
+        '''
+name: demo
+sync: false
+
+stages:
+  - name: build
+    jobs:
+      - name: panel
+        command: |
+          uv run src/process.py --years 2015 --run-from cluster --partition cpu_long
+
+  - name: viz
+    jobs:
+      - name: plot-result
+        command: |
+          uv run src/plot_result.py --run-from cluster --partition cpu_express
+''',
+    )
+
+    exec_plan = _build(workflow)
+
+    assert exec_plan["schema_version"] == 1
+    assert exec_plan["workflow_name"] == "demo"
+    assert exec_plan["run_id"].startswith("demo_")
+    assert exec_plan["user"] == "testuser"
+    assert exec_plan["remote_base"] == REMOTE_BASE
+    assert exec_plan["dependency_mode"] == "afterok"
+    assert exec_plan["max_concurrent"] == 4
+    assert exec_plan["poll_interval"] == 30
+
+    build_job, plot_job = exec_plan["jobs"]
+    assert build_job["deps"] == []
+    assert plot_job["deps"] == [0]
+    assert build_job["log_dir"] == "_logs_/workflows/demo/build"
+
+    argv = build_job["sbatch_argv"]
+    assert argv[0] == "sbatch"
+    assert "--partition=cpu_long" in argv
+    assert "--qos=cpu_long" in argv
+    assert "--cpus-per-task=32" in argv
+    assert "--mem=160G" in argv
+    assert "--time=168:00:00" in argv
+    assert "--job-name=panel" in argv
+    assert "--output=_logs_/workflows/demo/build/%x_%j.out" in argv
+    assert f"--export=ALL,PROJECT_DIR={REMOTE_BASE}" in argv
+    assert not any(arg.startswith("--dependency") for arg in argv)
+    worker_pos = argv.index(f"{REMOTE_BASE}/runnables/slurm/worker.slurm")
+    assert argv[worker_pos + 1 :] == ["python", "src/process.py", "--years", "2015"]
+
+    plot_argv = plot_job["sbatch_argv"]
+    assert f"--export=ALL,TEXLIVE=1,PROJECT_DIR={REMOTE_BASE}" in plot_argv
+
+
+def test_execution_plan_uses_custom_worker_script(tmp_path: Path) -> None:
+    workflow = _write_workflow(
+        tmp_path,
+        '''
+name: custom-worker-demo
+worker_script: runnables/slurm/custom_worker.slurm
+sync: false
+
+jobs:
+  - command: |
+      uv run src/a.py --run-from cluster
+''',
+    )
+    custom_worker = tmp_path / "runnables" / "slurm" / "custom_worker.slurm"
+    custom_worker.write_text("#!/bin/bash\n")
+
+    exec_plan = _build(workflow)
+
+    argv = exec_plan["jobs"][0]["sbatch_argv"]
+    assert f"{REMOTE_BASE}/runnables/slurm/custom_worker.slurm" in argv
+
+
+def test_max_concurrent_precedence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workflow = _write_workflow(
+        tmp_path,
+        '''
+name: throttled
+max_concurrent: 3
+sync: false
+
+jobs:
+  - command: |
+      uv run src/a.py --run-from cluster
+''',
+    )
+    plan = parse_workflow_file(workflow)
+
+    monkeypatch.setenv("CLUSTER_MAX_JOBS", "2")
+    assert resolve_max_concurrent(plan, 1) == 1  # CLI wins
+    assert resolve_max_concurrent(plan, None) == 3  # then YAML
+    plan_no_yaml = parse_workflow_file(
+        _write_workflow(
+            tmp_path,
+            '''
+jobs:
+  - command: |
+      uv run src/a.py --run-from cluster
+''',
+        )
+    )
+    assert resolve_max_concurrent(plan_no_yaml, None) == 2  # then env
+    monkeypatch.delenv("CLUSTER_MAX_JOBS")
+    assert resolve_max_concurrent(plan_no_yaml, None) == 4  # then default
+
+    assert resolve_poll_interval(plan, 10) == 10
+    assert resolve_poll_interval(plan_no_yaml, None) == 30
+
+
+# ---------------------------------------------------------------------------
+# submit_workflow
+# ---------------------------------------------------------------------------
+
+
+def test_submit_workflow_launches_orchestrator(tmp_path: Path) -> None:
+    workflow = _write_workflow(
+        tmp_path,
+        '''
+name: launch-demo
+sync: false
+
+jobs:
+  - command: |
+      uv run src/a.py --run-from cluster
+''',
+    )
+    launched: list[dict] = []
+
+    def fake_launch(exec_plan: dict) -> str:
+        launched.append(exec_plan)
+        run_id = exec_plan["run_id"]
+        return f"{exec_plan['remote_base']}/.cluster_kit/workflows/{run_id}"
+
+    with (
+        _patch_config(),
+        patch("cluster_kit.workflow.remote.launch_orchestrator", fake_launch),
+    ):
+        run_id = submit_workflow(workflow)
+
+    assert len(launched) == 1
+    assert run_id == launched[0]["run_id"]
+    assert run_id.startswith("launch-demo_")
+    assert len(launched[0]["jobs"]) == 1
+
+
+def test_submit_workflow_syncs_before_launch(tmp_path: Path) -> None:
+    workflow = _write_workflow(
+        tmp_path,
+        '''
+name: sync-demo
+sync: true
+
+jobs:
+  - command: |
+      uv run src/a.py --run-from cluster
+''',
+    )
+    calls: list[str] = []
+
+    deployer = MagicMock()
+    deployer.deploy.side_effect = lambda: calls.append("sync") or True
+
+    def fake_launch(exec_plan: dict) -> str:
+        calls.append("launch")
+        return "run-dir"
+
+    with (
+        _patch_config(),
+        patch("cluster_kit.workflow.runner.CodeDeployer", return_value=deployer),
+        patch("cluster_kit.workflow.remote.launch_orchestrator", fake_launch),
+    ):
+        submit_workflow(workflow)
+
+    assert calls == ["sync", "launch"]
+
+
+def test_dry_run_makes_no_remote_calls(tmp_path: Path) -> None:
     workflow = _write_workflow(
         tmp_path,
         '''
@@ -291,26 +509,38 @@ jobs:
 ''',
     )
 
-    with patch("cluster_kit.workflow.runner.submit_command") as submit:
-        job_ids = submit_workflow(workflow, dry_run=True)
+    with (
+        _patch_config(),
+        patch("cluster_kit.workflow.remote.launch_orchestrator") as launch,
+        patch("cluster_kit.workflow.runner.CodeDeployer") as deployer,
+    ):
+        result = submit_workflow(workflow, dry_run=True)
 
-    assert job_ids == ["dry-1-1"]
-    submit.assert_not_called()
+    assert result == "dry-run"
+    launch.assert_not_called()
+    deployer.assert_not_called()
 
 
-def test_parse_toml_workflow_still_works(tmp_path: Path) -> None:
-    path = tmp_path / "workflow.toml"
-    path.write_text(
+def test_dry_run_works_without_cluster_config(tmp_path: Path) -> None:
+    workflow = _write_workflow(
+        tmp_path,
         '''
-name = "compat-demo"
-mode = "chain"
+sync: false
 
-[[jobs]]
-command = "uv run src/compat.py --run-from cluster"
-'''
+jobs:
+  - command: |
+      uv run src/a.py --run-from cluster
+''',
     )
 
-    plan = parse_workflow_file(path)
+    def raise_config_error() -> None:
+        raise ConfigError("no config")
 
-    assert plan.mode == "chain"
-    assert plan.stages[0].jobs[0].submit_command == "uv run src/compat.py"
+    with patch.multiple(
+        "cluster_kit.workflow.plan",
+        get_remote_base=MagicMock(side_effect=raise_config_error),
+        get_cluster_user=MagicMock(side_effect=raise_config_error),
+    ):
+        result = submit_workflow(workflow, dry_run=True)
+
+    assert result == "dry-run"

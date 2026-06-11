@@ -1,13 +1,18 @@
 """YAML/TOML-defined SLURM workflow submission.
 
-Stages are submitted up front with SLURM dependencies, so the local machine
-does not need to poll the cluster after initial submission. Jobs within a
-parallel stage share the same previous-stage dependency; jobs within a
-sequential stage (``parallel: false``) are chained one at a time.
+Workflows are executed by a detached orchestrator on the cluster login node:
+``submit_workflow`` pre-renders every job's sbatch argv into a JSON execution
+plan, uploads it together with ``orchestrator.py``, and launches the daemon
+via nohup. The orchestrator submits each job once its dependencies have
+completed, keeping the user's total queued job count below ``max_concurrent``
+(default 4, the association MaxSubmit limit). Jobs within a parallel stage
+depend on the previous stage; jobs within a sequential stage
+(``parallel: false``) are chained one at a time.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import re
 import shlex
 import sys
@@ -20,7 +25,7 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
-from cluster_kit.launch.launcher import PARTITION_DEFAULTS, submit_command
+from cluster_kit.launch.launcher import PARTITION_DEFAULTS
 from cluster_kit.sync.code import CodeDeployer
 
 if sys.version_info >= (3, 11):
@@ -85,6 +90,8 @@ class WorkflowPlan:
     worker_script: str
     sync: bool
     stages: tuple[WorkflowStage, ...]
+    max_concurrent: int | None = None
+    poll_interval: int | None = None
 
 
 def parse_workflow_file(path: Path | str) -> WorkflowPlan:
@@ -118,6 +125,12 @@ def parse_workflow_file(path: Path | str) -> WorkflowPlan:
     ).strip() or "runnables/slurm/worker.slurm"
 
     sync = _as_bool(raw.get("sync"), True)
+    max_concurrent = _as_optional_positive_int(
+        raw.get("max_concurrent"), "max_concurrent"
+    )
+    poll_interval = _as_optional_positive_int(
+        raw.get("poll_interval"), "poll_interval"
+    )
     defaults = raw.get("defaults", {})
     if defaults is not None and not isinstance(defaults, dict):
         raise WorkflowError("defaults must be a mapping")
@@ -134,6 +147,8 @@ def parse_workflow_file(path: Path | str) -> WorkflowPlan:
         worker_script=worker_script,
         sync=sync,
         stages=tuple(stages),
+        max_concurrent=max_concurrent,
+        poll_interval=poll_interval,
     )
 
 
@@ -145,77 +160,72 @@ def submit_workflow(
     sync: bool | None = None,
     dependency: str | None = None,
     worker_script: Path | str | None = None,
-) -> list[str]:
-    """Submit a workflow and return submitted job IDs.
+    max_concurrent: int | None = None,
+    poll_interval: int | None = None,
+) -> str:
+    """Launch a workflow via the login-node orchestrator and return the run id.
 
-    Stages are submitted up front with SLURM dependencies so the scheduler,
-    not the local process, enforces stage order. In ``dry_run`` mode no SSH
-    calls are made; synthetic job IDs are returned.
+    The full execution plan (pre-rendered sbatch argv + dependency graph) is
+    uploaded to the cluster and executed by a detached orchestrator that
+    throttles submissions against the association job limit. In ``dry_run``
+    mode no SSH calls are made and ``"dry-run"`` is returned.
     """
+    from cluster_kit.workflow.plan import build_execution_plan
+
     plan = parse_workflow_file(path)
     if project_root is not None:
-        plan = _replace_plan_project_root(
-            plan,
-            Path(project_root).expanduser().resolve(),
+        plan = dataclasses.replace(
+            plan, project_root=Path(project_root).expanduser().resolve()
         )
     if sync is not None:
-        plan = _replace_plan_sync(plan, sync)
+        plan = dataclasses.replace(plan, sync=sync)
     if dependency is not None:
         if dependency not in _DEPENDENCY_MODES:
             raise WorkflowError(
                 f"dependency must be one of {sorted(_DEPENDENCY_MODES)}"
             )
-        plan = _replace_plan_dependency(plan, dependency)
+        plan = dataclasses.replace(plan, dependency=dependency)
     if worker_script is not None:
         worker_script_value = _as_string(worker_script, "").strip()
         if worker_script_value:
-            plan = _replace_plan_worker_script(plan, worker_script_value)
+            plan = dataclasses.replace(plan, worker_script=worker_script_value)
 
-    _render_plan(plan, dry_run=dry_run)
-    if plan.sync and not dry_run:
+    exec_plan = build_execution_plan(
+        plan,
+        max_concurrent=max_concurrent,
+        poll_interval=poll_interval,
+        allow_unresolved_config=dry_run,
+    )
+    _render_plan(plan, exec_plan, dry_run=dry_run)
+
+    if dry_run:
+        for job in exec_plan["jobs"]:
+            _console.print(
+                f"  [cyan]DRY[/cyan] {job['stage']}/{job['name']}"
+                f" deps={job['deps']} -> {shlex.join(job['sbatch_argv'])}"
+            )
+        return "dry-run"
+
+    if plan.sync:
         deployer = CodeDeployer(dry_run=False, verbose=False)
         deployer._local_base = plan.project_root
         if not deployer.deploy():
             raise WorkflowError("code sync failed; workflow submission aborted")
 
-    job_ids: list[str] = []
-    previous_stage_ids: list[str] = []
+    from cluster_kit.workflow.remote import RemoteError, launch_orchestrator
 
-    for stage_index, stage in enumerate(plan.stages, start=1):
-        stage_ids: list[str] = []
-        previous_job_id: str | None = None
-        for job_index, job in enumerate(stage.jobs, start=1):
-            stage_dependencies = (
-                previous_stage_ids
-                if stage.parallel or previous_job_id is None
-                else []
-            )
-            dependency_expr = _dependency_expression(
-                plan.dependency,
-                stage_dependencies,
-                previous_job_id if not stage.parallel else None,
-            )
-            job_id = _submit_or_preview_job(
-                plan,
-                stage,
-                job,
-                stage_index,
-                job_index,
-                dependency_expr,
-                plan.worker_script,
-                dry_run,
-            )
-            job_ids.append(job_id)
-            stage_ids.append(job_id)
-            previous_job_id = job_id
-
-        previous_stage_ids = stage_ids
+    try:
+        run_dir = launch_orchestrator(exec_plan)
+    except RemoteError as exc:
+        raise WorkflowError(str(exc)) from exc
 
     _console.print(
-        f"[green][OK][/green] Submitted workflow [bold]{plan.name}[/bold] "
-        f"with [bold]{len(job_ids)}[/bold] jobs"
+        f"[green][OK][/green] Launched workflow [bold]{plan.name}[/bold] "
+        f"({len(exec_plan['jobs'])} jobs) as run [bold]{exec_plan['run_id']}[/bold]\n"
+        f"[cyan]Run dir:[/cyan] {run_dir}\n"
+        f"Monitor with: [bold]cluster-kit workflow status --latest[/bold]"
     )
-    return job_ids
+    return exec_plan["run_id"]
 
 
 def _parse_stages(
@@ -377,82 +387,40 @@ def _normalize_command(command: str) -> str:
     return re.sub(r"\\\s*\n\s*", " ", command).strip()
 
 
-def _dependency_expression(
-    mode: str,
-    previous_stage_ids: list[str],
-    previous_job_id: str | None,
-) -> str | None:
-    dependency_ids = previous_stage_ids[:]
-    if previous_job_id:
-        dependency_ids.append(previous_job_id)
-    if not dependency_ids:
-        return None
-    return f"{mode}:{':'.join(dependency_ids)}"
-
-
-def _submit_or_preview_job(
+def _render_plan(
     plan: WorkflowPlan,
-    stage: WorkflowStage,
-    job: WorkflowJob,
-    stage_index: int,
-    job_index: int,
-    dependency: str | None,
-    worker_script: str,
+    exec_plan: dict[str, Any],
+    *,
     dry_run: bool,
-) -> str:
-    if dry_run:
-        preview_id = f"dry-{stage_index}-{job_index}"
-        _console.print(
-            f"  [cyan]DRY[/cyan] {preview_id}: {job.name}"
-            + (f" depends on {dependency}" if dependency else "")
-        )
-        return preview_id
-
-    job_id = submit_command(
-        job.submit_command,
-        project_root=plan.project_root,
-        partition=job.partition,
-        cpus=job.cpus,
-        mem=job.mem,
-        time=job.time,
-        qos=job.qos,
-        job_name=job.name,
-        log_dir=f"_logs_/workflows/{plan.name}/{stage.name}",
-        texlive=job.texlive,
-        sync=False,
-        dependency=dependency,
-        worker_script=worker_script,
-    )
-    if not job_id:
-        raise WorkflowError(f"failed to submit job {job.name}")
-    _console.print(
-        f"  [green][OK][/green] {job.name}: [bold]{job_id}[/bold]"
-        + (f" depends on {dependency}" if dependency else "")
-    )
-    return job_id
-
-
-def _render_plan(plan: WorkflowPlan, *, dry_run: bool) -> None:
+) -> None:
+    job_names = {job["index"]: job["name"] for job in exec_plan["jobs"]}
     table = Table(title=f"Workflow: {plan.name}", box=box.ROUNDED)
     table.add_column("Stage")
     table.add_column("Job")
     table.add_column("Partition")
     table.add_column("Resources")
-    for stage in plan.stages:
-        for job in stage.jobs:
-            table.add_row(
-                stage.name,
-                job.name,
-                job.partition,
-                f"{job.cpus} CPU, {job.mem}, {job.time}",
-            )
+    table.add_column("Depends on")
+    flat_jobs = [job for stage in plan.stages for job in stage.jobs]
+    for parsed_job, exec_job in zip(flat_jobs, exec_plan["jobs"]):
+        deps = ", ".join(job_names[dep] for dep in exec_job["deps"]) or "-"
+        table.add_row(
+            exec_job["stage"],
+            parsed_job.name,
+            parsed_job.partition,
+            f"{parsed_job.cpus} CPU, {parsed_job.mem}, {parsed_job.time}",
+            deps,
+        )
     _console.print(table)
     _console.print(
         f"[cyan]Mode:[/cyan] {plan.mode}  "
         f"[cyan]Dependency:[/cyan] {plan.dependency}  "
         f"[cyan]Sync:[/cyan] {'no' if dry_run else plan.sync}  "
         f"[cyan]Project:[/cyan] {plan.project_root}\n"
-        f"[cyan]Worker:[/cyan] {plan.worker_script}"
+        f"[cyan]Worker:[/cyan] {plan.worker_script}  "
+        f"[cyan]Max concurrent:[/cyan] {exec_plan['max_concurrent']}  "
+        f"[cyan]Poll:[/cyan] {exec_plan['poll_interval']}s\n"
+        f"[cyan]Run dir:[/cyan] "
+        f"{exec_plan['remote_base']}/.cluster_kit/workflows/{exec_plan['run_id']}"
     )
 
 
@@ -501,52 +469,13 @@ def _as_int(*values: Any) -> int:
     raise WorkflowError("missing integer value")
 
 
-def _replace_plan_project_root(plan: WorkflowPlan, project_root: Path) -> WorkflowPlan:
-    return WorkflowPlan(
-        plan.name,
-        plan.mode,
-        plan.dependency,
-        project_root,
-        plan.worker_script,
-        plan.sync,
-        plan.stages,
-    )
-
-
-def _replace_plan_sync(plan: WorkflowPlan, sync: bool) -> WorkflowPlan:
-    return WorkflowPlan(
-        plan.name,
-        plan.mode,
-        plan.dependency,
-        plan.project_root,
-        plan.worker_script,
-        sync,
-        plan.stages,
-    )
-
-
-def _replace_plan_dependency(plan: WorkflowPlan, dependency: str) -> WorkflowPlan:
-    return WorkflowPlan(
-        plan.name,
-        plan.mode,
-        dependency,
-        plan.project_root,
-        plan.worker_script,
-        plan.sync,
-        plan.stages,
-    )
-
-
-def _replace_plan_worker_script(
-    plan: WorkflowPlan,
-    worker_script: str,
-) -> WorkflowPlan:
-    return WorkflowPlan(
-        plan.name,
-        plan.mode,
-        plan.dependency,
-        plan.project_root,
-        worker_script,
-        plan.sync,
-        plan.stages,
-    )
+def _as_optional_positive_int(value: Any, key: str) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise WorkflowError(f"{key} must be a positive integer, got {value!r}") from exc
+    if parsed <= 0:
+        raise WorkflowError(f"{key} must be a positive integer, got {value!r}")
+    return parsed

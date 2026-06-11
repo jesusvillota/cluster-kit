@@ -48,6 +48,7 @@ from cluster_kit.config import get_cluster_host, get_remote_base
 __all__ = [
     "add_launcher_args",
     "maybe_launch",
+    "render_sbatch_argv",
     "resolve_slurm_resources",
     "submit_command",
     "submit_job",
@@ -757,7 +758,6 @@ def submit_command(
     """
     local_project_root = Path(project_root).resolve() if project_root else Path.cwd()
     remote_base = get_remote_base()
-    qos = qos or partition
 
     if sync:
         if not _run_cluster_sync(local_project_root):
@@ -782,13 +782,59 @@ def submit_command(
         )
         return None
 
+    try:
+        sbatch = render_sbatch_argv(
+            command,
+            remote_base=remote_base,
+            partition=partition,
+            cpus=cpus,
+            mem=mem,
+            time=time,
+            qos=qos,
+            job_name=job_name,
+            log_dir=log_dir,
+            texlive=texlive,
+            env_vars=env_vars,
+            mail_user=os.getenv("CLUSTER_EMAIL", ""),
+            worker_remote_path=remote_worker,
+            dependency=dependency,
+        )
+    except ValueError as exc:
+        _console.print(f"[red]{exc}[/red]")
+        return None
+
+    full_cmd = f"cd {remote_base} && {' '.join(shlex.quote(s) for s in sbatch)}"
+    return _ssh_submit(full_cmd)
+
+
+def render_sbatch_argv(
+    command: str,
+    *,
+    remote_base: str,
+    partition: str,
+    cpus: int,
+    mem: str,
+    time: str,
+    qos: str | None,
+    job_name: str,
+    log_dir: str,
+    texlive: bool,
+    env_vars: dict[str, str] | None,
+    mail_user: str,
+    worker_remote_path: str,
+    dependency: str | None = None,
+) -> list[str]:
+    """Render the full sbatch argv for a command, without submitting it.
+
+    The returned list is the exact argv to execute from ``remote_base`` on the
+    cluster (``log_dir`` and the worker path are interpreted relative to it by
+    SLURM). Raises ``ValueError`` for empty commands or shell operators.
+    """
     command_tokens = shlex.split(command.strip())
     if not command_tokens:
-        _console.print("[red]Command is empty[/red]")
-        return None
+        raise ValueError("Command is empty")
     if any(token in {"&&", "||", "|", ";", ">", ">>", "<"} for token in command_tokens):
-        _console.print("[red]Unsupported shell operators are not allowed[/red]")
-        return None
+        raise ValueError("Unsupported shell operators are not allowed")
 
     if len(command_tokens) >= 2 and command_tokens[:2] == ["uv", "run"]:
         if len(command_tokens) >= 3 and command_tokens[2] == "python":
@@ -796,10 +842,9 @@ def submit_command(
         else:
             command_tokens = ["python"] + command_tokens[2:]
 
-    mail_user = os.getenv("CLUSTER_EMAIL", "")
     sbatch = _build_sbatch_base(
         partition,
-        qos,
+        qos or partition,
         cpus,
         mem,
         time,
@@ -816,14 +861,9 @@ def submit_command(
     env_parts["PROJECT_DIR"] = remote_base
     if env_vars:
         env_parts.update(env_vars)
-    if env_parts:
-        exports = ",".join(
-            f"{key}={value}" for key, value in env_parts.items()
-        )
-        sbatch.append(f"--export=ALL,{exports}")
+    exports = ",".join(f"{key}={value}" for key, value in env_parts.items())
+    sbatch.append(f"--export=ALL,{exports}")
 
-    sbatch.append(remote_worker)
+    sbatch.append(worker_remote_path)
     sbatch.extend(command_tokens)
-
-    full_cmd = f"cd {remote_base} && {' '.join(shlex.quote(s) for s in sbatch)}"
-    return _ssh_submit(full_cmd)
+    return sbatch

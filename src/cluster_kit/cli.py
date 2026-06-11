@@ -224,7 +224,7 @@ def _cmd_env_launch(args: argparse.Namespace) -> None:
 
 
 def _cmd_workflow_run(args: argparse.Namespace) -> None:
-    """Submit a TOML-defined workflow to SLURM."""
+    """Launch a YAML/TOML-defined workflow via the login-node orchestrator."""
     from pathlib import Path
 
     from cluster_kit.workflow import WorkflowError, submit_workflow
@@ -237,8 +237,34 @@ def _cmd_workflow_run(args: argparse.Namespace) -> None:
             sync=False if args.no_sync else None,
             dependency=args.dependency,
             worker_script=args.worker_script,
+            max_concurrent=args.max_concurrent,
+            poll_interval=args.poll_interval,
         )
     except WorkflowError as exc:
+        print(f"[cluster-kit] Workflow error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _cmd_workflow_status(args: argparse.Namespace) -> None:
+    """Show the state of an orchestrated workflow run."""
+    from cluster_kit.workflow import show_status
+    from cluster_kit.workflow.remote import RemoteError
+
+    try:
+        show_status(args.run_id, show_log=args.log)
+    except RemoteError as exc:
+        print(f"[cluster-kit] Workflow error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _cmd_workflow_cancel(args: argparse.Namespace) -> None:
+    """Cancel an orchestrated workflow run."""
+    from cluster_kit.workflow import cancel_run
+    from cluster_kit.workflow.remote import RemoteError
+
+    try:
+        cancel_run(args.run_id)
+    except RemoteError as exc:
         print(f"[cluster-kit] Workflow error: {exc}", file=sys.stderr)
         sys.exit(1)
 
@@ -732,7 +758,64 @@ def _build_workflow_parser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="Override workflow worker script path",
     )
+    run_parser.add_argument(
+        "--max-concurrent",
+        type=int,
+        default=None,
+        help=(
+            "Max queued jobs (pending+running) at any time; defaults to the "
+            "workflow's max_concurrent, then $CLUSTER_MAX_JOBS, then 4"
+        ),
+    )
+    run_parser.add_argument(
+        "--poll-interval",
+        type=int,
+        default=None,
+        help="Orchestrator poll interval in seconds (default: 30)",
+    )
     run_parser.set_defaults(func=_cmd_workflow_run)
+
+    status_parser = workflow_sub.add_parser(
+        "status",
+        help="Show the state of an orchestrated workflow run",
+    )
+    status_parser.add_argument(
+        "run_id",
+        nargs="?",
+        default=None,
+        help="Run id (default: latest run)",
+    )
+    status_parser.add_argument(
+        "--latest",
+        action="store_true",
+        default=False,
+        help="Show the latest run (default when no run id is given)",
+    )
+    status_parser.add_argument(
+        "--log",
+        action="store_true",
+        default=False,
+        help="Also tail the orchestrator log",
+    )
+    status_parser.set_defaults(func=_cmd_workflow_status)
+
+    cancel_parser = workflow_sub.add_parser(
+        "cancel",
+        help="Kill an orchestrated run and scancel its active jobs",
+    )
+    cancel_parser.add_argument(
+        "run_id",
+        nargs="?",
+        default=None,
+        help="Run id (default: latest run)",
+    )
+    cancel_parser.add_argument(
+        "--latest",
+        action="store_true",
+        default=False,
+        help="Cancel the latest run (default when no run id is given)",
+    )
+    cancel_parser.set_defaults(func=_cmd_workflow_cancel)
 
 
 def build_parser() -> argparse.ArgumentParser:
