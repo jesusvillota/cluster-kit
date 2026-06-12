@@ -200,17 +200,19 @@ def submit_workflow(
 
     if dry_run:
         for job in exec_plan["jobs"]:
+            rendered = (
+                shlex.join(job["sbatch_argv"])
+                if "sbatch_argv" in job
+                else job["command"]
+            )
             _console.print(
                 f"  [cyan]DRY[/cyan] {job['stage']}/{job['name']}"
-                f" deps={job['deps']} -> {shlex.join(job['sbatch_argv'])}"
+                f" deps={job['deps']} -> {rendered}"
             )
         return "dry-run"
 
-    if plan.sync:
-        deployer = CodeDeployer(dry_run=False, verbose=False)
-        deployer._local_base = plan.project_root
-        if not deployer.deploy():
-            raise WorkflowError("code sync failed; workflow submission aborted")
+    if plan.sync and not _sync_before_submit(plan.project_root):
+        raise WorkflowError("code sync failed; workflow submission aborted")
 
     from cluster_kit.workflow.remote import RemoteError, launch_orchestrator
 
@@ -226,6 +228,20 @@ def submit_workflow(
         f"Monitor with: [bold]cluster-kit workflow status --latest[/bold]"
     )
     return exec_plan["run_id"]
+
+
+def _sync_before_submit(project_root: Path) -> bool:
+    """Sync code with the strategy configured for the active profile."""
+    from cluster_kit.config import get_sync_mode
+
+    if get_sync_mode() == "git":
+        from cluster_kit.sync.git_sync import GitSyncer
+
+        return GitSyncer(project_root=project_root).sync()
+
+    deployer = CodeDeployer(dry_run=False, verbose=False)
+    deployer._local_base = project_root
+    return deployer.deploy()
 
 
 def _parse_stages(
@@ -393,6 +409,7 @@ def _render_plan(
     *,
     dry_run: bool,
 ) -> None:
+    is_ssh = exec_plan.get("executor") == "ssh"
     job_names = {job["index"]: job["name"] for job in exec_plan["jobs"]}
     table = Table(title=f"Workflow: {plan.name}", box=box.ROUNDED)
     table.add_column("Stage")
@@ -406,17 +423,25 @@ def _render_plan(
         table.add_row(
             exec_job["stage"],
             parsed_job.name,
-            parsed_job.partition,
-            f"{parsed_job.cpus} CPU, {parsed_job.mem}, {parsed_job.time}",
+            "–" if is_ssh else parsed_job.partition,
+            "–"
+            if is_ssh
+            else f"{parsed_job.cpus} CPU, {parsed_job.mem}, {parsed_job.time}",
             deps,
         )
     _console.print(table)
+    worker_line = (
+        "[dim]SLURM resources ignored by the ssh executor[/dim]"
+        if is_ssh
+        else f"[cyan]Worker:[/cyan] {plan.worker_script}"
+    )
     _console.print(
         f"[cyan]Mode:[/cyan] {plan.mode}  "
         f"[cyan]Dependency:[/cyan] {plan.dependency}  "
+        f"[cyan]Executor:[/cyan] {exec_plan.get('executor', 'slurm')}  "
         f"[cyan]Sync:[/cyan] {'no' if dry_run else plan.sync}  "
         f"[cyan]Project:[/cyan] {plan.project_root}\n"
-        f"[cyan]Worker:[/cyan] {plan.worker_script}  "
+        f"{worker_line}  "
         f"[cyan]Max concurrent:[/cyan] {exec_plan['max_concurrent']}  "
         f"[cyan]Poll:[/cyan] {exec_plan['poll_interval']}s\n"
         f"[cyan]Run dir:[/cyan] "

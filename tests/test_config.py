@@ -271,3 +271,47 @@ class TestValidateConfigStrict:
         cfg = self._make_config(host="")
         with pytest.raises(ConfigError, match="CLUSTER_HOST"):
             validate_config_strict(cfg)
+
+
+# ---------------------------------------------------------------------------
+# executor / sync_mode
+# ---------------------------------------------------------------------------
+
+
+class TestExecutorAndSyncMode:
+    def test_defaults(self, minimal_env):
+        config = load_config()
+        assert config.executor == "slurm"
+        assert config.sync_mode == "rsync"
+
+    def test_env_overrides(self, minimal_env):
+        os.environ["CLUSTER_EXECUTOR"] = "ssh"
+        os.environ["CLUSTER_SYNC_MODE"] = "git"
+        config = load_config()
+        assert config.executor == "ssh"
+        assert config.sync_mode == "git"
+
+    def test_profile_prefixed_executor(self, minimal_env):
+        os.environ["CLUSTER_PC_HOST"] = "pc"
+        os.environ["CLUSTER_PC_EXECUTOR"] = "ssh"
+        os.environ["CLUSTER_PC_SYNC_MODE"] = "git"
+        os.environ["CLUSTER_PC_REMOTE_BASE"] = "/home/wsluser/GitHub/project"
+
+        default_config = load_config()
+        assert default_config.executor == "slurm"
+
+        pc_config = load_config(env_profile="pc")
+        assert pc_config.host == "pc"
+        assert pc_config.executor == "ssh"
+        assert pc_config.sync_mode == "git"
+        assert str(pc_config.remote_base) == "/home/wsluser/GitHub/project"
+
+    def test_invalid_executor_rejected(self, minimal_env):
+        os.environ["CLUSTER_EXECUTOR"] = "kubernetes"
+        errors = validate_config(load_config())
+        assert any("CLUSTER_EXECUTOR" in e for e in errors)
+
+    def test_invalid_sync_mode_rejected(self, minimal_env):
+        os.environ["CLUSTER_SYNC_MODE"] = "ftp"
+        errors = validate_config(load_config())
+        assert any("CLUSTER_SYNC_MODE" in e for e in errors)

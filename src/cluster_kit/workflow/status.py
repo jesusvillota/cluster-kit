@@ -8,9 +8,10 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
-from cluster_kit.config import get_remote_base
+from cluster_kit.config import get_cluster_host, get_remote_base
 from cluster_kit.workflow.remote import (
     RemoteError,
+    kill_job_groups,
     kill_orchestrator,
     mark_cancelled,
     read_log,
@@ -38,6 +39,8 @@ def show_status(run_id: str | None = None, *, show_log: bool = False) -> None:
     remote_base = str(get_remote_base())
     run_id = resolve_run_id(remote_base, run_id)
     state = read_state(remote_base, run_id)
+    executor = state.get("executor", "slurm")
+    ref_label = "SLURM ID" if executor == "slurm" else "PID"
 
     table = Table(
         title=f"Workflow run: {state['run_id']} [{state['status']}]",
@@ -46,8 +49,8 @@ def show_status(run_id: str | None = None, *, show_log: bool = False) -> None:
     table.add_column("Stage")
     table.add_column("Job")
     table.add_column("State")
-    table.add_column("SLURM ID")
-    table.add_column("SLURM state")
+    table.add_column(ref_label)
+    table.add_column("Exec state")
     table.add_column("Exit")
     counts: dict[str, int] = {}
     for job in state["jobs"]:
@@ -58,27 +61,30 @@ def show_status(run_id: str | None = None, *, show_log: bool = False) -> None:
             job["stage"],
             job["name"],
             f"[{style}]{job_state}[/{style}]" if style else job_state,
-            job.get("slurm_job_id") or "-",
-            job.get("slurm_state") or "-",
+            job.get("exec_ref") or "-",
+            job.get("exec_state") or "-",
             job.get("exit_code") or "-",
         )
     _console.print(table)
     summary = "  ".join(f"{key}={value}" for key, value in sorted(counts.items()))
     _console.print(
         f"[cyan]Jobs:[/cyan] {summary}\n"
+        f"[cyan]Executor:[/cyan] {executor}  "
         f"[cyan]Started:[/cyan] {state.get('started_at', '-')}  "
         f"[cyan]Heartbeat:[/cyan] {state.get('heartbeat', '-')}  "
         f"[cyan]Run dir:[/cyan] {run_dir_for(remote_base, run_id)}"
     )
 
     if state["status"] == "running" and _heartbeat_stale(state):
+        host = get_cluster_host()
+        run_dir = run_dir_for(remote_base, run_id)
         _console.print(
             "[yellow]Warning:[/yellow] heartbeat is stale — the orchestrator may "
             "have crashed. Resume it with:\n"
-            f"  ssh cluster 'cd {remote_base} && nohup python3 "
-            f"{run_dir_for(remote_base, run_id)}/orchestrator.py "
-            f"{run_dir_for(remote_base, run_id)}/plan.json >> "
-            f"{run_dir_for(remote_base, run_id)}/orchestrator.log 2>&1 &'"
+            f"  ssh {host} 'cd {remote_base} && nohup python3 "
+            f"{run_dir}/orchestrator.py "
+            f"{run_dir}/plan.json >> "
+            f"{run_dir}/orchestrator.log 2>&1 &'"
         )
 
     if show_log:
@@ -87,7 +93,7 @@ def show_status(run_id: str | None = None, *, show_log: bool = False) -> None:
 
 
 def cancel_run(run_id: str | None = None) -> None:
-    """Kill the orchestrator and scancel its non-terminal jobs."""
+    """Kill the orchestrator and terminate its non-terminal jobs."""
     remote_base = str(get_remote_base())
     run_id = resolve_run_id(remote_base, run_id)
 
@@ -101,23 +107,33 @@ def cancel_run(run_id: str | None = None) -> None:
     try:
         state = read_state(remote_base, run_id)
     except RemoteError:
-        _console.print("[yellow]No state.json found; nothing to scancel[/yellow]")
+        _console.print("[yellow]No state.json found; nothing to cancel[/yellow]")
         mark_cancelled(remote_base, run_id)
         return
 
+    executor = state.get("executor", "slurm")
     active_ids = [
-        job["slurm_job_id"]
+        job["exec_ref"]
         for job in state["jobs"]
-        if job["state"] == "SUBMITTED" and job.get("slurm_job_id")
+        if job["state"] == "SUBMITTED" and job.get("exec_ref")
     ]
     if active_ids:
-        scancel_jobs(active_ids)
-        _console.print(
-            f"[green][OK][/green] Cancelled {len(active_ids)} SLURM job(s): "
-            f"{', '.join(active_ids)}"
-        )
+        if executor == "ssh":
+            # The orchestrator's SIGTERM handler kills its children; this is
+            # the fallback for jobs it could not reach (e.g. already dead).
+            kill_job_groups(active_ids)
+            _console.print(
+                f"[green][OK][/green] Sent TERM to {len(active_ids)} "
+                f"process group(s): {', '.join(active_ids)}"
+            )
+        else:
+            scancel_jobs(active_ids)
+            _console.print(
+                f"[green][OK][/green] Cancelled {len(active_ids)} SLURM job(s): "
+                f"{', '.join(active_ids)}"
+            )
     else:
-        _console.print("No active SLURM jobs to cancel")
+        _console.print("No active jobs to cancel")
 
     pending = sum(
         1 for job in state["jobs"] if job["state"] in _NON_TERMINAL_JOB_STATES

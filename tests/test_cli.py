@@ -322,3 +322,91 @@ class TestMain:
             assert exc.value.code == 0
             captured = capsys.readouterr()
             assert "usage" in captured.out.lower()
+
+
+# ---------------------------------------------------------------------------
+# job / exec subcommands and profile flag
+# ---------------------------------------------------------------------------
+
+
+class TestJobParser:
+    def test_job_submit(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["job", "submit", "uv run src/a.py", "--name", "panel"]
+        )
+        assert args.job_command == "submit"
+        assert args.command == "uv run src/a.py"
+        assert args.name == "panel"
+
+    def test_job_list(self):
+        parser = build_parser()
+        args = parser.parse_args(["job", "list"])
+        assert args.job_command == "list"
+
+    def test_job_status(self):
+        parser = build_parser()
+        args = parser.parse_args(["job", "status", "panel_20260612-100000_ab12"])
+        assert args.job_command == "status"
+        assert args.job_id == "panel_20260612-100000_ab12"
+
+    def test_job_logs_defaults(self):
+        parser = build_parser()
+        args = parser.parse_args(["job", "logs", "x"])
+        assert args.lines == 50
+        assert args.follow is False
+
+    def test_job_logs_follow(self):
+        parser = build_parser()
+        args = parser.parse_args(["job", "logs", "x", "-f", "-n", "200"])
+        assert args.follow is True
+        assert args.lines == 200
+
+    def test_job_cancel_force(self):
+        parser = build_parser()
+        args = parser.parse_args(["job", "cancel", "x", "--force"])
+        assert args.job_command == "cancel"
+        assert args.force is True
+
+    def test_job_requires_subcommand(self):
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["job"])
+
+
+class TestExecParser:
+    def test_exec_command(self):
+        parser = build_parser()
+        args = parser.parse_args(["exec", "duckdb -c 'select 42'"])
+        assert args.remote_command == "duckdb -c 'select 42'"
+
+
+class TestProfileFlag:
+    def test_profile_flag_parses(self):
+        parser = build_parser()
+        args = parser.parse_args(["-p", "pc", "job", "list"])
+        assert args.profile == "pc"
+
+    def test_profile_sets_cluster_env(self):
+        os.environ["CLUSTER_PC_REMOTE_BASE"] = "/home/wsluser/project"
+        os.environ["CLUSTER_PC_EXECUTOR"] = "ssh"
+        with patch("cluster_kit.cli._cmd_config") as mock_config:
+            with patch.object(
+                sys, "argv", ["cluster-kit", "--profile", "pc", "--config"]
+            ):
+                with pytest.raises(SystemExit):
+                    main()
+                mock_config.assert_called_once()
+        assert os.environ["CLUSTER_ENV"] == "pc"
+
+
+class TestSyncCodeForceFlag:
+    def test_force_default_false(self):
+        parser = build_parser()
+        args = parser.parse_args(["sync", "code"])
+        assert args.force is False
+
+    def test_force_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["sync", "code", "--force"])
+        assert args.force is True

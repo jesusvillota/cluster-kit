@@ -14,11 +14,16 @@ import os
 import re
 from typing import Any
 
-from cluster_kit.config import ConfigError, get_cluster_user, get_remote_base
+from cluster_kit.config import (
+    ConfigError,
+    get_cluster_user,
+    get_executor,
+    get_remote_base,
+)
 from cluster_kit.launch.launcher import _resolve_worker_script, render_sbatch_argv
 from cluster_kit.workflow.runner import WorkflowError, WorkflowJob, WorkflowPlan
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_MAX_CONCURRENT = 4
 DEFAULT_POLL_INTERVAL = 30
 MAX_CONCURRENT_ENV_VAR = "CLUSTER_MAX_JOBS"
@@ -92,51 +97,59 @@ def build_execution_plan(
     try:
         remote_base = str(get_remote_base())
         user = get_cluster_user()
+        executor = get_executor()
     except ConfigError:
         if not allow_unresolved_config:
             raise
         remote_base = UNRESOLVED_REMOTE_BASE
         user = UNRESOLVED_USER
+        executor = "slurm"
 
-    resolved_worker = _resolve_worker_script(plan.project_root, plan.worker_script)
-    if resolved_worker is None:
-        raise WorkflowError(f"worker script not found: {plan.worker_script}")
-    worker_remote_path = (
-        f"{remote_base}/{resolved_worker.relative_to(plan.project_root).as_posix()}"
-    )
-
+    worker_remote_path = None
     mail_user = os.getenv("CLUSTER_EMAIL", "")
+    if executor == "slurm":
+        resolved_worker = _resolve_worker_script(plan.project_root, plan.worker_script)
+        if resolved_worker is None:
+            raise WorkflowError(f"worker script not found: {plan.worker_script}")
+        worker_remote_path = (
+            f"{remote_base}/"
+            f"{resolved_worker.relative_to(plan.project_root).as_posix()}"
+        )
+
     workflow_slug = _slugify(plan.name)
     run_id = f"{workflow_slug}_{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
     jobs: list[dict[str, Any]] = []
     for index, (job, stage_name, deps) in enumerate(compute_dependency_graph(plan)):
         log_dir = f"_logs_/workflows/{plan.name}/{stage_name}"
-        sbatch_argv = render_sbatch_argv(
-            job.submit_command,
-            remote_base=remote_base,
-            partition=job.partition,
-            cpus=job.cpus,
-            mem=job.mem,
-            time=job.time,
-            qos=job.qos,
-            job_name=job.name,
-            log_dir=log_dir,
-            texlive=job.texlive,
-            env_vars=None,
-            mail_user=mail_user,
-            worker_remote_path=worker_remote_path,
-        )
-        jobs.append(
-            {
-                "index": index,
-                "name": job.name,
-                "stage": stage_name,
-                "deps": deps,
-                "log_dir": log_dir,
-                "sbatch_argv": sbatch_argv,
-            }
-        )
+        entry: dict[str, Any] = {
+            "index": index,
+            "name": job.name,
+            "stage": stage_name,
+            "deps": deps,
+            "log_dir": log_dir,
+        }
+        if executor == "slurm":
+            entry["sbatch_argv"] = render_sbatch_argv(
+                job.submit_command,
+                remote_base=remote_base,
+                partition=job.partition,
+                cpus=job.cpus,
+                mem=job.mem,
+                time=job.time,
+                qos=job.qos,
+                job_name=job.name,
+                log_dir=log_dir,
+                texlive=job.texlive,
+                env_vars=None,
+                mail_user=mail_user,
+                worker_remote_path=worker_remote_path,
+            )
+        else:
+            # ssh executor: the orchestrator spawns the command directly on
+            # the machine; keep `uv run` so the project venv is used.
+            entry["command"] = job.submit_command
+        jobs.append(entry)
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -145,6 +158,7 @@ def build_execution_plan(
         "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "user": user,
         "remote_base": remote_base,
+        "executor": executor,
         "dependency_mode": plan.dependency,
         "max_concurrent": resolve_max_concurrent(plan, max_concurrent),
         "poll_interval": resolve_poll_interval(plan, poll_interval),

@@ -1,6 +1,7 @@
 """CLI entry point for cluster-kit."""
 
 import argparse
+import os
 import sys
 
 from cluster_kit import __version__
@@ -24,6 +25,8 @@ def _cmd_config(args: argparse.Namespace) -> None:
     print(f"  ssh_key:       {config.ssh_key}")
     print(f"  ssh_timeout:   {config.ssh_timeout}")
     print(f"  sync_exclude:  {config.sync_exclude}")
+    print(f"  executor:      {config.executor}")
+    print(f"  sync_mode:     {config.sync_mode}")
 
     if errors:
         print("\n[WARN] Validation issues:")
@@ -34,7 +37,28 @@ def _cmd_config(args: argparse.Namespace) -> None:
 
 
 def _cmd_sync_code(args: argparse.Namespace) -> None:
-    """Sync source code to the cluster."""
+    """Sync source code to the remote (rsync or git, per profile)."""
+    from cluster_kit.config import get_sync_mode
+
+    if get_sync_mode() == "git":
+        from cluster_kit.sync.git_sync import GitSyncer
+
+        syncer = GitSyncer(
+            dry_run=args.dry_run,
+            force=args.force,
+            verbose=args.verbose,
+        )
+        if not syncer.sync():
+            sys.exit(1)
+        return
+
+    if args.force:
+        print(
+            "[cluster-kit] --force only applies to git sync mode",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
     from cluster_kit.sync.code import CodeDeployer
 
     deployer = CodeDeployer(
@@ -89,6 +113,16 @@ def _cmd_sync_cp(args: argparse.Namespace) -> None:
 
 def _cmd_tui(args: argparse.Namespace) -> None:
     """Launch the cluster management TUI."""
+    from cluster_kit.config import get_executor
+
+    if get_executor() != "slurm":
+        print(
+            "[cluster-kit] The TUI requires the SLURM executor; "
+            "use `cluster-kit job list` for ssh-executor profiles.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if args.phone:
         from cluster_kit.tui.app_phone import PhoneClusterTUI
 
@@ -107,17 +141,33 @@ def _cmd_tui(args: argparse.Namespace) -> None:
 
 
 def _cmd_launch(args: argparse.Namespace) -> None:
-    """Submit a script as a SLURM job."""
-    from cluster_kit.launch.launcher import submit_job
-
+    """Submit a script as a SLURM job or a detached remote job."""
     script_path = args.script
 
     if args.run_from == "local":
         import subprocess
-        import sys
 
         result = subprocess.run([sys.executable, script_path])
         sys.exit(result.returncode)
+
+    from cluster_kit.config import get_executor
+
+    if get_executor() == "ssh":
+        from cluster_kit.jobs import JobError, submit
+
+        print(
+            "[cluster-kit] ssh executor: --partition/--slurm-* flags are ignored"
+        )
+        try:
+            handle = submit(f"uv run python {script_path}")
+        except JobError as exc:
+            print(f"[cluster-kit] {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(f"[cluster-kit] Submitted detached job {handle.job_id}")
+        print(f"[cluster-kit] Log: {handle.log_path}")
+        return
+
+    from cluster_kit.launch.launcher import submit_job
 
     job_id = submit_job(
         script_path,
@@ -269,6 +319,124 @@ def _cmd_workflow_cancel(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _cmd_exec(args: argparse.Namespace) -> None:
+    """Run a command synchronously on the remote, streaming output."""
+    import shlex
+
+    from cluster_kit.config import get_remote_base
+    from cluster_kit.utils.ssh import (
+        RemoteUnreachableError,
+        ensure_reachable,
+        stream_remote,
+    )
+
+    try:
+        ensure_reachable()
+    except RemoteUnreachableError as exc:
+        print(f"[cluster-kit] {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    base = shlex.quote(str(get_remote_base()))
+    command = (
+        f"cd {base} && "
+        f'export PATH="$HOME/.local/bin:$PATH" && {args.remote_command}'
+    )
+    sys.exit(stream_remote(f"bash -c {shlex.quote(command)}"))
+
+
+def _cmd_job(args: argparse.Namespace) -> None:
+    """Detached-job operations (submit/list/status/logs/cancel)."""
+    from rich import box
+    from rich.console import Console
+    from rich.table import Table
+
+    from cluster_kit.jobs import (
+        JobError,
+        cancel,
+        job_status,
+        list_jobs,
+        read_log,
+        submit,
+    )
+    from cluster_kit.utils.ssh import RemoteUnreachableError
+
+    console = Console()
+    state_styles = {
+        "RUNNING": "cyan",
+        "COMPLETED": "green",
+        "FAILED": "red",
+        "CANCELLED": "yellow",
+        "DIED": "red",
+    }
+
+    try:
+        if args.job_command == "submit":
+            handle = submit(args.command, name=args.name)
+            console.print(
+                f"[green][OK][/green] Submitted [bold]{handle.job_id}[/bold]\n"
+                f"[cyan]Log:[/cyan] {handle.log_path}\n"
+                f"Check with: [bold]cluster-kit job status {handle.job_id}[/bold]"
+            )
+        elif args.job_command == "list":
+            jobs = list_jobs()
+            table = Table(title="Detached jobs", box=box.ROUNDED)
+            table.add_column("Job ID")
+            table.add_column("State")
+            table.add_column("Exit")
+            table.add_column("Created")
+            table.add_column("Command")
+            for job in jobs:
+                style = state_styles.get(job["state"], "")
+                state = (
+                    f"[{style}]{job['state']}[/{style}]" if style else job["state"]
+                )
+                table.add_row(
+                    job["job_id"],
+                    state,
+                    job.get("rc") or "-",
+                    job.get("created_at") or "-",
+                    (job.get("command") or "-")[:60],
+                )
+            console.print(table)
+        elif args.job_command == "status":
+            info = job_status(args.job_id)
+            style = state_styles.get(info["state"], "")
+            state = (
+                f"[{style}]{info['state']}[/{style}]" if style else info["state"]
+            )
+            console.print(
+                f"[cyan]Job:[/cyan] {info['job_id']}\n"
+                f"[cyan]State:[/cyan] {state}"
+                + (f" (exit {info['rc']})" if info.get("rc") else "")
+                + f"\n[cyan]PID:[/cyan] {info.get('pid') or '-'}\n"
+                f"[cyan]Created:[/cyan] {info.get('created_at') or '-'}\n"
+                f"[cyan]Git SHA:[/cyan] {info.get('git_sha') or '-'}\n"
+                f"[cyan]Command:[/cyan] {info.get('command') or '-'}"
+            )
+            if info["state"] == "DIED":
+                console.print(
+                    "[yellow]No exit code and no live process — the machine "
+                    "(or WSL VM) likely shut down or slept mid-run.[/yellow]"
+                )
+        elif args.job_command == "logs":
+            output = read_log(args.job_id, lines=args.lines, follow=args.follow)
+            if not args.follow:
+                print(output, end="")
+        elif args.job_command == "cancel":
+            if cancel(args.job_id, force=args.force):
+                console.print(
+                    f"[green][OK][/green] Cancelled [bold]{args.job_id}[/bold]"
+                )
+            else:
+                console.print(
+                    f"[yellow]No signal delivered for {args.job_id} "
+                    "(already finished?)[/yellow]"
+                )
+    except (JobError, RemoteUnreachableError) as exc:
+        print(f"[cluster-kit] {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
 def _build_sync_parser(subparsers: argparse._SubParsersAction) -> None:
     """Build the 'sync' subcommand with nested sub-subcommands."""
     sync_parser = subparsers.add_parser(
@@ -289,6 +457,15 @@ def _build_sync_parser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         default=False,
         help="Show detailed output",
+    )
+    code_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help=(
+            "Git sync mode only: reset the remote checkout to origin/<branch> "
+            "(discards remote-side commits/changes; untracked files survive)"
+        ),
     )
     code_parser.set_defaults(func=_cmd_sync_code)
 
@@ -818,6 +995,81 @@ def _build_workflow_parser(subparsers: argparse._SubParsersAction) -> None:
     cancel_parser.set_defaults(func=_cmd_workflow_cancel)
 
 
+def _build_job_parser(subparsers: argparse._SubParsersAction) -> None:
+    """Build the 'job' subcommand (detached jobs on ssh-executor profiles)."""
+    job_parser = subparsers.add_parser(
+        "job",
+        help="Manage detached jobs on an ssh-executor remote",
+    )
+    job_sub = job_parser.add_subparsers(
+        dest="job_command", help="Job operations", required=True
+    )
+
+    submit_parser = job_sub.add_parser(
+        "submit", help="Submit a command as a detached job"
+    )
+    submit_parser.add_argument(
+        "command",
+        help="Shell command to run from the remote project root",
+    )
+    submit_parser.add_argument(
+        "--name",
+        default=None,
+        help="Job name (default: derived from the command)",
+    )
+    submit_parser.set_defaults(func=_cmd_job)
+
+    list_parser = job_sub.add_parser("list", help="List jobs and their states")
+    list_parser.set_defaults(func=_cmd_job)
+
+    status_parser = job_sub.add_parser("status", help="Show one job's state")
+    status_parser.add_argument("job_id", help="Job id")
+    status_parser.set_defaults(func=_cmd_job)
+
+    logs_parser = job_sub.add_parser("logs", help="Tail a job's log")
+    logs_parser.add_argument("job_id", help="Job id")
+    logs_parser.add_argument(
+        "-n",
+        "--lines",
+        type=int,
+        default=50,
+        help="Number of log lines to show (default: 50)",
+    )
+    logs_parser.add_argument(
+        "-f",
+        "--follow",
+        action="store_true",
+        default=False,
+        help="Follow the log (tail -f)",
+    )
+    logs_parser.set_defaults(func=_cmd_job)
+
+    cancel_parser = job_sub.add_parser(
+        "cancel", help="TERM a job's whole process group"
+    )
+    cancel_parser.add_argument("job_id", help="Job id")
+    cancel_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Follow up with SIGKILL",
+    )
+    cancel_parser.set_defaults(func=_cmd_job)
+
+
+def _build_exec_parser(subparsers: argparse._SubParsersAction) -> None:
+    """Build the 'exec' subcommand (synchronous remote command)."""
+    exec_parser = subparsers.add_parser(
+        "exec",
+        help="Run a command synchronously on the remote, streaming output",
+    )
+    exec_parser.add_argument(
+        "remote_command",
+        help="Shell command to run from the remote project root",
+    )
+    exec_parser.set_defaults(func=_cmd_exec)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build and return the top-level argument parser."""
     parser = argparse.ArgumentParser(
@@ -837,6 +1089,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Display current cluster configuration and exit",
     )
+    parser.add_argument(
+        "-p",
+        "--profile",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Config profile: resolve CLUSTER_<NAME>_* env vars before "
+            "CLUSTER_* (equivalent to setting CLUSTER_ENV)"
+        ),
+    )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
@@ -845,6 +1107,8 @@ def build_parser() -> argparse.ArgumentParser:
     _build_workflow_parser(subparsers)
     _build_tui_parser(subparsers)
     _build_launch_parser(subparsers)
+    _build_job_parser(subparsers)
+    _build_exec_parser(subparsers)
     _build_serve_parser(subparsers)
 
     return parser
@@ -854,6 +1118,12 @@ def main() -> None:
     """Main entry point for the cluster-kit CLI."""
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.profile:
+        from cluster_kit.config import reset_config_cache
+
+        os.environ["CLUSTER_ENV"] = args.profile
+        reset_config_cache()
 
     if args.config:
         _cmd_config(args)

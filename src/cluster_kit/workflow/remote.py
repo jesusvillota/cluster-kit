@@ -158,6 +158,16 @@ def scancel_jobs(job_ids: list[str]) -> None:
         raise RemoteError(f"scancel failed: {result.stderr.strip()}")
 
 
+def kill_job_groups(pids: list[str]) -> None:
+    """TERM the given process groups on the remote (ssh executor cancel)."""
+    if not pids:
+        return
+    kills = "; ".join(
+        f'kill -TERM -- "-{int(pid)}" 2>/dev/null' for pid in pids
+    )
+    _ssh(f"bash -c {shlex.quote(kills + '; true')}")
+
+
 def mark_cancelled(remote_base: str, run_id: str) -> None:
     run_dir = shlex.quote(run_dir_for(remote_base, run_id))
     _ssh(f"touch {run_dir}/CANCELLED")

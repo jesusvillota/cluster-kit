@@ -39,6 +39,8 @@ __all__ = [
     "get_ssh_timeout",
     "get_sync_exclude",
     "get_slurm_partition",
+    "get_executor",
+    "get_sync_mode",
 ]
 
 
@@ -51,6 +53,11 @@ _DEFAULT_SSH_KEY = "~/.ssh/id_ed25519_cluster"
 _DEFAULT_SSH_TIMEOUT = 30
 _DEFAULT_SYNC_EXCLUDE = "__pycache__,*.pyc,*.pyo"
 _DEFAULT_SLURM_PARTITION = "cpu_express"
+_DEFAULT_EXECUTOR = "slurm"
+_DEFAULT_SYNC_MODE = "rsync"
+
+VALID_EXECUTORS = ("slurm", "ssh")
+VALID_SYNC_MODES = ("rsync", "git")
 
 # Variable base names (without CLUSTER_ prefix)
 _VAR_NAMES = (
@@ -61,6 +68,8 @@ _VAR_NAMES = (
     "SSH_TIMEOUT",
     "SYNC_EXCLUDE",
     "SLURM_PARTITION",
+    "EXECUTOR",
+    "SYNC_MODE",
 )
 
 
@@ -90,6 +99,10 @@ class ClusterConfig:
         ssh_timeout: SSH connection timeout in seconds (1-300).
         sync_exclude: Comma-separated rsync exclude patterns.
         slurm_partition: SLURM partition for job submission.
+        executor: Job execution backend: ``slurm`` (sbatch on a login node)
+            or ``ssh`` (detached processes on a plain remote machine).
+        sync_mode: Code sync strategy: ``rsync`` (push working tree) or
+            ``git`` (remote checkout pulls from the shared GitHub remote).
     """
 
     host: str
@@ -99,6 +112,8 @@ class ClusterConfig:
     ssh_timeout: int
     sync_exclude: str
     slurm_partition: str = _DEFAULT_SLURM_PARTITION
+    executor: str = _DEFAULT_EXECUTOR
+    sync_mode: str = _DEFAULT_SYNC_MODE
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +186,8 @@ def load_config(
     slurm_partition = (
         _get_env_var("SLURM_PARTITION", env_profile) or _DEFAULT_SLURM_PARTITION
     )
+    executor = _get_env_var("EXECUTOR", env_profile) or _DEFAULT_EXECUTOR
+    sync_mode = _get_env_var("SYNC_MODE", env_profile) or _DEFAULT_SYNC_MODE
 
     # Type conversions
     if remote_base_raw is None:
@@ -197,6 +214,8 @@ def load_config(
         ssh_timeout=ssh_timeout,
         sync_exclude=sync_exclude,
         slurm_partition=slurm_partition,
+        executor=executor,
+        sync_mode=sync_mode,
     )
 
 
@@ -261,6 +280,18 @@ def validate_config(config: ClusterConfig) -> list[str]:
     if config.sync_exclude and re.search(r"\s+,|,\s+|\s+$|^\s+", config.sync_exclude):
         errors.append(
             "CLUSTER_SYNC_EXCLUDE must be comma-separated patterns without spaces"
+        )
+
+    # Executor / sync mode
+    if config.executor not in VALID_EXECUTORS:
+        errors.append(
+            f"CLUSTER_EXECUTOR must be one of {VALID_EXECUTORS}, "
+            f"got '{config.executor}'"
+        )
+    if config.sync_mode not in VALID_SYNC_MODES:
+        errors.append(
+            f"CLUSTER_SYNC_MODE must be one of {VALID_SYNC_MODES}, "
+            f"got '{config.sync_mode}'"
         )
 
     return errors
@@ -329,6 +360,16 @@ def get_sync_exclude() -> str:
 def get_slurm_partition() -> str:
     """Return the configured SLURM partition."""
     return _get_config().slurm_partition
+
+
+def get_executor() -> str:
+    """Return the configured execution backend (``slurm`` or ``ssh``)."""
+    return _get_config().executor
+
+
+def get_sync_mode() -> str:
+    """Return the configured code sync mode (``rsync`` or ``git``)."""
+    return _get_config().sync_mode
 
 
 def reset_config_cache() -> None:

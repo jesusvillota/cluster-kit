@@ -2,6 +2,13 @@
 
 CLI toolkit for cluster management, code synchronization, and SLURM job submission.
 
+Besides SLURM clusters, cluster-kit can target plain SSH machines (e.g. a
+Windows PC running WSL behind a VPN) through the **ssh executor**: detached
+jobs (`cluster-kit job ...`), synchronous commands (`cluster-kit exec ...`),
+git-based code sync, and workflows without sbatch. See
+[docs/ssh-executor.md](docs/ssh-executor.md) and
+[docs/pc-ssh-setup.md](docs/pc-ssh-setup.md).
+
 ## Installation
 
 ```bash
@@ -331,6 +338,8 @@ All variables are loaded from `.env` (via `python-dotenv`) or set directly in yo
 | `CLUSTER_SSH_KEY` | `~/.ssh/id_ed25519_cluster` | No | Path to SSH private key |
 | `CLUSTER_SSH_TIMEOUT` | `30` | No | SSH connection timeout (1-300 seconds) |
 | `CLUSTER_SYNC_EXCLUDE` | `__pycache__,*.pyc,*.pyo` | No | Comma-separated rsync exclude patterns |
+| `CLUSTER_EXECUTOR` | `slurm` | No | Job backend: `slurm` (sbatch) or `ssh` (detached processes on a plain machine) |
+| `CLUSTER_SYNC_MODE` | `rsync` | No | Code sync: `rsync` (push working tree) or `git` (remote clone pulls from GitHub) |
 
 ### Multi-Cluster Profiles
 

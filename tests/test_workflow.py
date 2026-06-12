@@ -33,11 +33,12 @@ def _write_workflow(tmp_path: Path, content: str, *, worker: bool = True) -> Pat
     return path
 
 
-def _patch_config():
+def _patch_config(executor: str = "slurm"):
     return patch.multiple(
         "cluster_kit.workflow.plan",
         get_remote_base=MagicMock(return_value=PurePosixPath(REMOTE_BASE)),
         get_cluster_user=MagicMock(return_value="testuser"),
+        get_executor=MagicMock(return_value=executor),
     )
 
 
@@ -338,7 +339,8 @@ stages:
 
     exec_plan = _build(workflow)
 
-    assert exec_plan["schema_version"] == 1
+    assert exec_plan["schema_version"] == 2
+    assert exec_plan["executor"] == "slurm"
     assert exec_plan["workflow_name"] == "demo"
     assert exec_plan["run_id"].startswith("demo_")
     assert exec_plan["user"] == "testuser"
@@ -368,6 +370,41 @@ stages:
 
     plot_argv = plot_job["sbatch_argv"]
     assert f"--export=ALL,TEXLIVE=1,PROJECT_DIR={REMOTE_BASE}" in plot_argv
+
+
+def test_execution_plan_ssh_executor_renders_commands(tmp_path: Path) -> None:
+    workflow = _write_workflow(
+        tmp_path,
+        '''
+name: pc-demo
+sync: false
+
+stages:
+  - name: build
+    jobs:
+      - name: panel
+        command: |
+          uv run src/process.py --years 2015 --run-from pc --partition cpu_long
+
+  - name: viz
+    jobs:
+      - name: plot-result
+        command: |
+          uv run src/plot_result.py --run-from pc
+''',
+        worker=False,  # ssh executor needs no worker.slurm
+    )
+
+    plan = parse_workflow_file(workflow)
+    with _patch_config(executor="ssh"):
+        exec_plan = build_execution_plan(plan)
+
+    assert exec_plan["executor"] == "ssh"
+    build_job, plot_job = exec_plan["jobs"]
+    assert "sbatch_argv" not in build_job
+    assert build_job["command"] == "uv run src/process.py --years 2015"
+    assert plot_job["command"] == "uv run src/plot_result.py"
+    assert plot_job["deps"] == [0]
 
 
 def test_execution_plan_uses_custom_worker_script(tmp_path: Path) -> None:
@@ -489,12 +526,46 @@ jobs:
 
     with (
         _patch_config(),
+        patch("cluster_kit.config.get_sync_mode", return_value="rsync"),
         patch("cluster_kit.workflow.runner.CodeDeployer", return_value=deployer),
         patch("cluster_kit.workflow.remote.launch_orchestrator", fake_launch),
     ):
         submit_workflow(workflow)
 
     assert calls == ["sync", "launch"]
+
+
+def test_submit_workflow_git_sync_mode_uses_git_syncer(tmp_path: Path) -> None:
+    workflow = _write_workflow(
+        tmp_path,
+        '''
+name: git-sync-demo
+sync: true
+
+jobs:
+  - command: |
+      uv run src/a.py --run-from pc
+''',
+        worker=False,
+    )
+    calls: list[str] = []
+
+    syncer = MagicMock()
+    syncer.sync.side_effect = lambda: calls.append("git-sync") or True
+
+    def fake_launch(exec_plan: dict) -> str:
+        calls.append("launch")
+        return "run-dir"
+
+    with (
+        _patch_config(executor="ssh"),
+        patch("cluster_kit.config.get_sync_mode", return_value="git"),
+        patch("cluster_kit.sync.git_sync.GitSyncer", return_value=syncer),
+        patch("cluster_kit.workflow.remote.launch_orchestrator", fake_launch),
+    ):
+        submit_workflow(workflow)
+
+    assert calls == ["git-sync", "launch"]
 
 
 def test_dry_run_makes_no_remote_calls(tmp_path: Path) -> None:
