@@ -5,7 +5,10 @@ behind a VPN — through the **ssh executor**. The same profile mechanism that
 selects clusters selects executors: a profile with `CLUSTER_<P>_EXECUTOR=ssh`
 runs jobs as detached processes on the machine instead of submitting sbatch.
 
-Machine setup: [pc-ssh-setup.md](pc-ssh-setup.md).
+Machine setup: [pc-ssh-setup.md](pc-ssh-setup.md) — including the
+connection-path trade-offs (corporate-VPN LAN IP vs Tailscale) and a
+troubleshooting table of real failure modes (route conflicts, ICMP-blocking
+VPNs, DHCP lease changes, WSL lifetime).
 
 ## Profiles
 
