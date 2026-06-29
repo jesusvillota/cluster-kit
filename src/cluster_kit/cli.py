@@ -676,10 +676,11 @@ def _build_tui_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Refresh interval in seconds (default: 60)",
     )
     tui_parser.add_argument(
-        "--all-users",
-        action="store_true",
-        default=False,
-        help="Show jobs for all cluster users",
+        "--user-only",
+        action="store_false",
+        dest="all_users",
+        default=True,
+        help="Show only the current user's jobs",
     )
     tui_parser.set_defaults(func=_cmd_tui)
 

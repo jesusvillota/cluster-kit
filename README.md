@@ -171,15 +171,15 @@ cluster-kit tui --phone
 # Custom refresh interval (10 seconds)
 cluster-kit tui --refresh 10
 
-# Show all users' jobs
-cluster-kit tui --all-users
+# Show only your jobs
+cluster-kit tui --user-only
 ```
 
 | Flag | Description |
 |---|---|
 | `--phone` | Optimize layout for phone screens |
 | `--refresh N` | Refresh interval in seconds (default: 60) |
-| `--all-users` | Show jobs for all cluster users |
+| `--user-only` | Show only the current user's jobs |
 
 ### `launch`
 
@@ -423,7 +423,7 @@ CLUSTER_SYNC_EXCLUDE=__pycache__, *.pyc, *.pyo
 ### TUI shows no jobs
 
 - Ensure you have SSH access to the cluster
-- Use `--all-users` if jobs are running under a different user
+- Use `--user-only` if you want to hide other users' jobs
 - Increase `--refresh` if the cluster is slow to respond
 
 ### `serve start` fails

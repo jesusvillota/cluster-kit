@@ -3,11 +3,11 @@ uv run cluster_kit/tui/app.py
 
 uv run cluster_kit/tui/app.py \
     --refresh 60 \
-    --all-users
+    --user-only
 
 CLI Arguments:
 --refresh (default: 60) {squeue auto-refresh interval in seconds}
---all-users (default: true) {Show all users' jobs, not just the current user}
+--user-only (default: false) {Show only the current user's jobs}
 
 LLM-optimized description: Runs a Textual terminal UI for cluster monitoring
 with 3 tabs: queue, available resources, and logs. Reads SLURM queue state,
@@ -307,10 +307,11 @@ def parse_args() -> argparse.Namespace:
         help="squeue auto-refresh interval in seconds (default: 60)",
     )
     parser.add_argument(
-        "--all-users",
-        action="store_true",
-        default=False,
-        help="Show all users' jobs, not just current user's",
+        "--user-only",
+        action="store_false",
+        dest="all_users",
+        default=True,
+        help="Show only the current user's jobs",
     )
     return parser.parse_args()
 
