@@ -437,6 +437,98 @@ def _cmd_job(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _cmd_notify(args: argparse.Namespace) -> None:
+    """Fetch the queue and push a summary to a webhook (chat bridge, etc.)."""
+    from cluster_kit.config import get_cluster_user, load_config
+    from cluster_kit.notify import NotifyError, build_summary, post_webhook
+    from cluster_kit.tui.backend.queue_parser import (
+        fetch_queue,
+        parse_squeue_output,
+    )
+
+    load_config()  # ensure .env is loaded so CLUSTER_NOTIFY_* resolve
+    user = args.user or get_cluster_user()
+    webhook = args.webhook or os.getenv("CLUSTER_NOTIFY_WEBHOOK")
+    recipient = args.to or os.getenv("CLUSTER_NOTIFY_TO")
+
+    result = fetch_queue(user=user, state=args.state)
+    if not result.success:
+        print(
+            f"[cluster-kit] queue fetch failed: {result.error_message}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    jobs = parse_squeue_output(result.stdout)
+    if not jobs and not args.always:
+        print("[cluster-kit] queue empty; nothing to send")
+        return
+
+    summary = build_summary(jobs, user)
+    if args.dry_run:
+        print(summary)
+        return
+
+    if not webhook or not recipient:
+        print(
+            "[cluster-kit] set --webhook/--to or "
+            "CLUSTER_NOTIFY_WEBHOOK/CLUSTER_NOTIFY_TO",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        post_webhook(webhook, recipient, summary)
+    except (NotifyError, OSError) as exc:
+        print(f"[cluster-kit] send failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print(f"[cluster-kit] sent queue summary ({len(jobs)} jobs) to {recipient}")
+
+
+def _build_notify_parser(subparsers: argparse._SubParsersAction) -> None:
+    """Build the 'notify' subcommand."""
+    notify_parser = subparsers.add_parser(
+        "notify",
+        help="Push a queue summary to a webhook (chat bridge, etc.)",
+    )
+    notify_parser.add_argument(
+        "--to",
+        default=None,
+        help="Webhook recipient (default: $CLUSTER_NOTIFY_TO)",
+    )
+    notify_parser.add_argument(
+        "--webhook",
+        default=None,
+        help=(
+            "Webhook URL accepting POST {recipient, message} "
+            "(default: $CLUSTER_NOTIFY_WEBHOOK)"
+        ),
+    )
+    notify_parser.add_argument(
+        "--user",
+        default=None,
+        help="squeue -u target (default: configured CLUSTER_USER)",
+    )
+    notify_parser.add_argument(
+        "--state",
+        default=None,
+        help="Filter by SLURM state (e.g. RUNNING, PENDING)",
+    )
+    notify_parser.add_argument(
+        "--always",
+        action="store_true",
+        default=False,
+        help="Send even when the queue is empty (default: stay quiet)",
+    )
+    notify_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Print the summary instead of sending it",
+    )
+    notify_parser.set_defaults(func=_cmd_notify)
+
+
 def _build_sync_parser(subparsers: argparse._SubParsersAction) -> None:
     """Build the 'sync' subcommand with nested sub-subcommands."""
     sync_parser = subparsers.add_parser(
@@ -1110,6 +1202,7 @@ def build_parser() -> argparse.ArgumentParser:
     _build_job_parser(subparsers)
     _build_exec_parser(subparsers)
     _build_serve_parser(subparsers)
+    _build_notify_parser(subparsers)
 
     return parser
 
