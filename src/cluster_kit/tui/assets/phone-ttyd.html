@@ -4,8 +4,9 @@
 <script>
 (() => {
   const harden = () => {
-    document.querySelectorAll('textarea').forEach((el) => {
-      el.setAttribute('readonly', 'readonly');
+    document.querySelectorAll('textarea:not([data-cluster-kit-no-keyboard])').forEach((el) => {
+      el.dataset.clusterKitNoKeyboard = '1';
+      el.readOnly = true;
       el.disabled = true;
       el.setAttribute('inputmode', 'none');
       el.setAttribute('enterkeyhint', 'done');
@@ -14,27 +15,24 @@
       el.setAttribute('autocapitalize', 'off');
       el.style.caretColor = 'transparent';
       el.style.fontSize = '16px';
-      if (!el.dataset.clusterKitNoKeyboard) {
-        el.dataset.clusterKitNoKeyboard = '1';
-        el.addEventListener('focus', () => {
-          el.setAttribute('readonly', 'readonly');
-          el.setAttribute('inputmode', 'none');
-          setTimeout(() => el.blur(), 0);
-        }, true);
-      }
+      el.addEventListener('focus', () => {
+        el.setAttribute('readonly', 'readonly');
+        el.setAttribute('inputmode', 'none');
+        setTimeout(() => el.blur(), 0);
+      }, true);
     });
   };
   const start = () => {
     harden();
+    // Watch only for NEW textareas. Observing attribute changes here caused an
+    // infinite harden->mutation->harden loop that hung the page ("Page
+    // Unresponsive"); the :not([data-...]) guard makes harden idempotent.
     new MutationObserver(harden).observe(document.documentElement, {
       childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['inputmode', 'readonly']
+      subtree: true
     });
     document.addEventListener('touchstart', harden, true);
     document.addEventListener('pointerdown', harden, true);
-    setInterval(harden, 250);
   };
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', start, { once: true });
