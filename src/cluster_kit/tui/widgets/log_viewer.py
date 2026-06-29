@@ -57,16 +57,24 @@ class LogViewer(Widget):
         height: 1fr;
     }
     LogViewer.phone-compact {
-        padding: 0;
+        padding: 1 1;
     }
 
     LogViewer.phone-compact #job-id-bar {
         height: auto;
         grid-size: 1;
+        padding: 0 0 1 0;
     }
 
-    LogViewer.phone-compact #job-id-bar Input {
-        min-width: 0;
+    LogViewer.phone-compact #job-id-bar Button {
+        height: 5;
+        min-height: 5;
+        margin: 0 0 1 0;
+    }
+
+    LogViewer.phone-compact #job-id-label {
+        height: 1;
+        margin: 0 0 1 0;
     }
 
     LogViewer.phone-compact #log-placeholder {
@@ -102,9 +110,7 @@ class LogViewer(Widget):
     def compose(self) -> ComposeResult:
         if self._compact:
             with Vertical(id="job-id-bar"):
-                yield Label("Job ID", id="job-id-label")
-                yield Input(placeholder="e.g. 12345", id="job-id-input")
-                yield Button("Load", variant="primary", id="job-id-btn")
+                yield Label("Select a queue job, then tap Job Log.", id="job-id-label")
                 yield Button("Copy", variant="default", id="copy-btn")
         else:
             with Horizontal(id="job-id-bar"):

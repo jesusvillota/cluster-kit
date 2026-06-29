@@ -32,6 +32,9 @@ cluster-kit = "cluster_kit.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+cluster_kit = ["tui/assets/*.html"]
+
 [tool.ruff]
 target-version = "py310"
 line-length = 88

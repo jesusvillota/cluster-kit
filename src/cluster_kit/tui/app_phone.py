@@ -35,7 +35,6 @@ from textual.containers import (  # type: ignore[reportMissingImports]
 )
 from textual.widgets import (  # type: ignore[reportMissingImports]
     Button,
-    Input,
     Static,
 )
 
@@ -118,19 +117,11 @@ class PhoneClusterTUI(App[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="phone-shell"):
-            yield Static("Cluster TUI Phone", id="phone-title")
-            with Grid(id="phone-nav-row", classes="phone-row"):
+            yield Static("Cluster Kit", id="phone-title")
+            with Grid(id="phone-nav-row"):
                 yield Button("Queue", id="phone-nav-queue", classes="active-view")
-                yield Button("Available", id="phone-nav-available")
+                yield Button("Nodes", id="phone-nav-available")
                 yield Button("Logs", id="phone-nav-logs")
-            with Grid(id="phone-action-row-primary", classes="phone-row"):
-                yield Button("Refresh", variant="primary", id="phone-action-refresh")
-                yield Button("Selected Logs", id="phone-action-selected-logs")
-                yield Button("Cancel Job", variant="error", id="phone-action-cancel")
-            with Grid(id="phone-action-row-secondary", classes="phone-row"):
-                yield Button("Manual Logs", id="phone-action-manual-logs")
-                yield Button("Stdout/Err", id="phone-action-toggle-stderr")
-                yield Button("Sync Code", id="phone-action-sync")
             yield ConnectionStatus(id="phone-status")
             with Vertical(id="phone-views"):
                 with Vertical(id="phone-queue-view", classes="phone-view"):
@@ -139,6 +130,20 @@ class PhoneClusterTUI(App[None]):
                     yield AvailableResourcesTable(compact=True)
                 with Vertical(id="phone-logs-view", classes="phone-view"):
                     yield LogViewer(compact=True)
+            with Vertical(id="phone-action-dock"):
+                with Grid(id="phone-action-row-primary"):
+                    yield Button(
+                        "Refresh", variant="primary", id="phone-action-refresh"
+                    )
+                    yield Button("Log", id="phone-action-selected-logs")
+                    yield Button(
+                        "Cancel", variant="error", id="phone-action-cancel"
+                    )
+                with Grid(id="phone-action-row-secondary"):
+                    yield Button("Out/Err", id="phone-action-toggle-stderr")
+                    yield Button(
+                        "Sync", variant="success", id="phone-action-sync"
+                    )
 
     def on_mount(self) -> None:
         self._set_active_view("queue")
@@ -253,10 +258,6 @@ class PhoneClusterTUI(App[None]):
         log_viewer = self.query_one(LogViewer)
         log_viewer.show_log(job_id, log_file)
         self._update_job_action_enabled_state()
-        try:
-            self.query_one("#job-id-input", Input).value = job_id
-        except Exception:
-            pass
 
     def action_show_view(self, view: str) -> None:
         self._set_active_view(view)
@@ -329,7 +330,7 @@ class PhoneClusterTUI(App[None]):
     def action_job_logs(self) -> None:
         self._set_active_view("logs")
         self.query_one(LogViewer).reset_log_view()
-        self.query_one("#job-id-input", Input).focus()
+        self.notify("Select a queue job, then tap Job Log")
 
     def on_log_viewer_log_job_requested(
         self, message: LogViewer.LogJobRequested
@@ -356,8 +357,6 @@ class PhoneClusterTUI(App[None]):
             self.action_view_logs()
         elif button_id == "phone-action-cancel":
             self.action_cancel_job()
-        elif button_id == "phone-action-manual-logs":
-            self.action_job_logs()
         elif button_id == "phone-action-toggle-stderr":
             self.action_toggle_stderr()
         elif button_id == "phone-action-sync":

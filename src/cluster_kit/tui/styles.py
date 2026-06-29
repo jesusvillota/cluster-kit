@@ -171,72 +171,99 @@ PHONE_CSS: str = (
     + """
 
 Screen {
-    background: $surface;
+    background: $surface-darken-1;
 }
 
 #phone-shell {
     height: 1fr;
-    padding: 0 1;
+    padding: 0;
 }
 
+/* ---- Header bar -------------------------------------------------------- */
 #phone-title {
-    height: 3;
+    height: 1;
     content-align: center middle;
     text-align: center;
-    background: $primary-darken-2;
+    background: $surface-darken-1;
     color: $text;
     text-style: bold;
-}
-
-.phone-row {
-    width: 100%;
-    height: 3;
-    margin: 0 0 1 0;
-}
-
-.phone-row Button {
-    width: 1fr;
-    height: 3;
-    min-height: 3;
-    margin: 0;
     padding: 0 1;
-    content-align: center middle;
-    text-align: center;
-    color: $text;
 }
 
-#phone-nav-row,
-#phone-action-row-primary,
-#phone-action-row-secondary {
-    height: 3;
-    grid-gutter: 1;
-}
-
+/* ---- Top segmented control (view tabs) --------------------------------- */
 #phone-nav-row {
     layout: grid;
     grid-size: 3 1;
     grid-columns: 1fr 1fr 1fr;
     grid-rows: 3;
-}
-
-#phone-action-row-primary,
-#phone-action-row-secondary {
-    layout: grid;
-    grid-size: 3 1;
-    grid-columns: 1fr 1fr 1fr;
-    grid-rows: 3;
-}
-
-#phone-status {
-    height: 2;
+    grid-gutter: 1;
+    width: 100%;
+    height: 3;
     padding: 0 1;
-    content-align: left middle;
+    margin: 1 0 0 0;
 }
 
+#phone-nav-row Button {
+    width: 1fr;
+    height: 3;
+    min-height: 3;
+    margin: 0;
+    padding: 0;
+    content-align: center middle;
+    text-align: center;
+    text-style: none;
+    color: $text-muted;
+    border: round $panel-lighten-1;
+    background: $boost;
+}
+
+#phone-nav-row Button:hover {
+    border: round $accent;
+}
+
+#phone-nav-row Button.active-view {
+    background: $accent;
+    color: $text;
+    text-style: bold;
+    border: round $accent-lighten-2;
+}
+
+#phone-nav-row Button:disabled {
+    color: $text-disabled;
+    background: $panel-darken-1;
+    border: round $panel;
+    text-style: none;
+}
+
+/* ---- Status line ------------------------------------------------------- */
+#phone-status {
+    height: 1;
+    padding: 0 1;
+    margin: 1 0 0 0;
+    content-align: left middle;
+    color: $text-muted;
+    text-style: bold;
+}
+
+ConnectionStatus.connected {
+    color: $success;
+}
+
+ConnectionStatus.stale {
+    color: $warning;
+}
+
+ConnectionStatus.error {
+    color: $error;
+}
+
+/* ---- Content viewport -------------------------------------------------- */
 #phone-views {
     height: 1fr;
     border: round $primary;
+    background: $surface;
     padding: 0;
+    margin: 1 1 0 1;
 }
 
 .phone-view {
@@ -254,14 +281,59 @@ Screen {
     padding: 0 1;
 }
 
-Button.active-view {
-    background: $accent;
-    color: $text;
-    text-style: bold;
+/* ---- Bottom action dock (thumb reach) ---------------------------------- */
+#phone-action-dock {
+    dock: bottom;
+    height: auto;
+    padding: 0 1;
+    background: $panel-darken-1;
+    border-top: round $primary;
 }
 
-.phone-row Button:disabled {
-    color: $text 55%;
+#phone-action-row-primary,
+#phone-action-row-secondary {
+    layout: grid;
+    grid-size: 2 1;
+    grid-columns: 1fr 1fr;
+    grid-rows: 3;
+    grid-gutter: 1;
+    width: 100%;
+    height: 3;
+    margin: 0 0 1 0;
+}
+
+#phone-action-row-primary {
+    grid-size: 3 1;
+    grid-columns: 1fr 1fr 1fr;
+}
+
+#phone-action-row-secondary {
+    margin: 0;
+}
+
+#phone-action-dock Button {
+    width: 1fr;
+    height: 3;
+    min-height: 3;
+    margin: 0;
+    padding: 0;
+    content-align: center middle;
+    text-align: center;
+    text-style: none;
+    color: $text;
+    border: round $panel-lighten-2;
+    background: $panel;
+}
+
+#phone-action-dock Button:hover {
+    border: round $accent;
+}
+
+#phone-action-dock Button:disabled {
+    color: $text-disabled;
+    background: $panel-darken-1;
+    border: round $panel;
+    text-style: none;
 }
 """
 )

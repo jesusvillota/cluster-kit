@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import importlib.resources
 import os
 import shlex
 import shutil
@@ -38,7 +39,50 @@ PHONE_ACCESS_SESSION_ENV_VAR = "CLUSTER_KIT_PHONE_SESSION_NAME"
 PHONE_ACCESS_COMMAND_ENV_VAR = "CLUSTER_KIT_PHONE_COMMAND"
 PHONE_ACCESS_SESSION_MARKER_ENV_VAR = "CLUSTER_KIT_PHONE_SESSION_MARKER"
 
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
+# Backward-compatible aliases from the legacy whales repo. Honored alongside the
+# canonical CLUSTER_KIT_PHONE_* names so existing whales setups keep working.
+PHONE_ACCESS_PORT_ENV_VAR_ALIASES: tuple[str, ...] = ("WSB_CLUSTER_TUI_PHONE_PORT",)
+PHONE_ACCESS_SESSION_ENV_VAR_ALIASES: tuple[str, ...] = (
+    "WSB_CLUSTER_TUI_SESSION_NAME",
+)
+PHONE_ACCESS_COMMAND_ENV_VAR_ALIASES: tuple[str, ...] = ("WSB_CLUSTER_TUI_COMMAND",)
+PHONE_ACCESS_SESSION_MARKER_ENV_VAR_ALIASES: tuple[str, ...] = (
+    "WSB_CLUSTER_TUI_PHONE_SESSION_MARKER",
+)
+# Legacy/out-of-band location; the packaged asset (below) is preferred.
+PHONE_TTYD_CACHE_INDEX_PATH = Path.home() / ".cache" / "cluster-kit" / "phone-ttyd.html"
+
+
+def resolve_phone_ttyd_index_path() -> Path | None:
+    """Custom ttyd web index for the phone UI: prefer the asset shipped with the
+    package, fall back to the legacy ~/.cache copy. Returns None if neither exists."""
+    try:
+        packaged = Path(
+            str(importlib.resources.files("cluster_kit.tui") / "assets" / "phone-ttyd.html")
+        )
+        if packaged.is_file():
+            return packaged
+    except (ModuleNotFoundError, FileNotFoundError):
+        pass
+    if PHONE_TTYD_CACHE_INDEX_PATH.is_file():
+        return PHONE_TTYD_CACHE_INDEX_PATH
+    return None
+
+
+def _resolve_env(
+    env: Mapping[str, str],
+    canonical: str,
+    aliases: Sequence[str],
+) -> str | None:
+    if canonical in env:
+        return env[canonical]
+    for alias in aliases:
+        if alias in env:
+            return env[alias]
+    return None
+
+# src/cluster_kit/tui/phone_access.py -> repo root is parents[3]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 @dataclass(frozen=True)
@@ -108,7 +152,9 @@ def resolve_phone_access_config(
     environ: Mapping[str, str] | None = None,
 ) -> PhoneAccessConfig:
     env = environ if environ is not None else os.environ
-    raw_port = env.get(PHONE_ACCESS_PORT_ENV_VAR, str(DEFAULT_PHONE_ACCESS_PORT))
+    raw_port = _resolve_env(
+        env, PHONE_ACCESS_PORT_ENV_VAR, PHONE_ACCESS_PORT_ENV_VAR_ALIASES
+    ) or str(DEFAULT_PHONE_ACCESS_PORT)
     try:
         port = parse_port(raw_port)
     except ValueError as exc:
@@ -116,14 +162,14 @@ def resolve_phone_access_config(
     except argparse.ArgumentTypeError as exc:
         raise ValueError(f"Invalid {PHONE_ACCESS_PORT_ENV_VAR}: {raw_port!r}") from exc
 
-    session_name = env.get(
-        PHONE_ACCESS_SESSION_ENV_VAR,
-        DEFAULT_PHONE_ACCESS_SESSION_NAME,
-    )
-    cluster_tui_command = env.get(
+    session_name = _resolve_env(
+        env, PHONE_ACCESS_SESSION_ENV_VAR, PHONE_ACCESS_SESSION_ENV_VAR_ALIASES
+    ) or DEFAULT_PHONE_ACCESS_SESSION_NAME
+    cluster_tui_command = _resolve_env(
+        env,
         PHONE_ACCESS_COMMAND_ENV_VAR,
-        DEFAULT_PHONE_ACCESS_COMMAND,
-    )
+        PHONE_ACCESS_COMMAND_ENV_VAR_ALIASES,
+    ) or DEFAULT_PHONE_ACCESS_COMMAND
     qa_safe_mode_enabled = is_qa_safe_mode_enabled(env.get(QA_SAFE_MODE_ENV_VAR))
     return PhoneAccessConfig(
         port=port,
@@ -180,6 +226,17 @@ def build_tmux_stop_command(session_name: str) -> list[str]:
     return ["tmux", "kill-session", "-t", session_name]
 
 
+def build_tmux_set_status_command(config: PhoneAccessConfig, value: str) -> list[str]:
+    return [
+        "tmux",
+        "set-option",
+        "-t",
+        resolve_tmux_session_name(config),
+        "status",
+        value,
+    ]
+
+
 def build_session_verification_marker(config: PhoneAccessConfig) -> str:
     return "|".join(
         (
@@ -220,13 +277,57 @@ def build_tailscale_serve_command(config: PhoneAccessConfig) -> str:
     return f"tailscale serve {build_phone_access_local_url(config)}"
 
 
+# xterm.js client options passed to ttyd so the terminal is legible on a phone
+# without pinch-zooming. Large font + matching dark theme = fewer, bigger columns.
+# ponytail: hard-coded phone-friendly defaults; expose via env vars only if someone
+# actually needs a different size.
+PHONE_TERMINAL_THEME = (
+    '{"background":"#0d1117","foreground":"#c9d1d9","cursor":"#58a6ff",'
+    '"selectionBackground":"#1f6feb","black":"#484f58","red":"#ff7b72",'
+    '"green":"#3fb950","yellow":"#d29922","blue":"#58a6ff","magenta":"#bc8cff",'
+    '"cyan":"#39c5cf","white":"#b1bac4","brightBlack":"#6e7681",'
+    '"brightRed":"#ffa198","brightGreen":"#56d364","brightYellow":"#e3b341",'
+    '"brightBlue":"#79c0ff","brightMagenta":"#d2a8ff","brightCyan":"#56d4dd",'
+    '"brightWhite":"#f0f6fc"}'
+)
+
+PHONE_TERMINAL_CLIENT_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("fontSize", "23"),
+    ("lineHeight", "1.05"),
+    ("letterSpacing", "-2"),
+    (
+        "fontFamily",
+        "-apple-system, BlinkMacSystemFont, 'SF Pro Text', "
+        "'Helvetica Neue', Arial, sans-serif",
+    ),
+    ("fontWeight", "500"),
+    ("fontWeightBold", "700"),
+    ("theme", PHONE_TERMINAL_THEME),
+    ("cursorBlink", "true"),
+    ("disableLeaveAlert", "true"),
+    ("scrollback", "2000"),
+)
+
+
 def build_ttyd_start_command(config: PhoneAccessConfig) -> list[str]:
+    client_option_args: list[str] = []
+    for key, value in PHONE_TERMINAL_CLIENT_OPTIONS:
+        client_option_args += ["-t", f"{key}={value}"]
+    ttyd_index_path = resolve_phone_ttyd_index_path()
+    index_args = (
+        ["-I", str(ttyd_index_path)]
+        if config.ui_mode == "phone" and ttyd_index_path is not None
+        else []
+    )
     return [
         "ttyd",
         "-i",
         DEFAULT_PHONE_ACCESS_HOST,
         "-p",
         str(config.port),
+        "-W",
+        *index_args,
+        *client_option_args,
         "tmux",
         "attach-session",
         "-t",
@@ -355,26 +456,20 @@ def is_phone_access_ttyd_process(command: str, config: PhoneAccessConfig) -> boo
     except ValueError:
         return False
 
-    tmux_target_session = resolve_tmux_session_name(config)
-
-    expected_suffix = [
-        "-i",
-        DEFAULT_PHONE_ACCESS_HOST,
-        "-p",
-        str(config.port),
-        "tmux",
-        "attach-session",
-        "-t",
-        tmux_target_session,
-    ]
+    # Identity = ttyd bound to our host+port. macOS ps may omit the child tmux
+    # tail from the process title, so host+port is the stable match.
+    if not tokens or Path(tokens[0]).name != "ttyd":
+        return False
     return (
-        len(tokens) == len(expected_suffix) + 1
-        and Path(tokens[0]).name == "ttyd"
-        and [
-            Path(token).name if index == 4 else token
-            for index, token in enumerate(tokens[1:])
-        ]
-        == expected_suffix
+        _contains_flag(tokens, "-i", DEFAULT_PHONE_ACCESS_HOST)
+        and _contains_flag(tokens, "-p", str(config.port))
+    )
+
+
+def _contains_flag(tokens: Sequence[str], flag: str, value: str) -> bool:
+    return any(
+        token == flag and index + 1 < len(tokens) and tokens[index + 1] == value
+        for index, token in enumerate(tokens)
     )
 
 
@@ -516,6 +611,11 @@ def start_phone_access(
                 runner(build_tmux_set_marker_command(config)),
                 "tmux session marker set",
             )
+    if config.ui_mode == "phone":
+        _ensure_command_succeeded(
+            runner(build_tmux_set_status_command(config, "off")),
+            "tmux phone status disable",
+        )
     if not status.alive_ttyd_processes:
         spawner(build_ttyd_start_command(config))
     return get_phone_access_status(config, runner=runner)
@@ -731,7 +831,11 @@ def config_from_args(args: argparse.Namespace) -> PhoneAccessConfig:
     elif args.phone_ui:
         cluster_tui_command = build_phone_ui_command()
         ui_mode = "phone"
-    elif os.environ.get(PHONE_ACCESS_COMMAND_ENV_VAR) is not None:
+    elif _resolve_env(
+        os.environ,
+        PHONE_ACCESS_COMMAND_ENV_VAR,
+        PHONE_ACCESS_COMMAND_ENV_VAR_ALIASES,
+    ) is not None:
         cluster_tui_command = defaults.cluster_tui_command
         ui_mode = "phone" if is_phone_ui_command(cluster_tui_command) else "custom"
     else:

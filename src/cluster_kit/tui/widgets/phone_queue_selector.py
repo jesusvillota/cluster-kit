@@ -29,22 +29,38 @@ class PhoneQueueSelector(Widget):
     DEFAULT_CSS = """
     PhoneQueueSelector {
         height: 1fr;
-        padding: 0 1;
+        padding: 1 1;
     }
 
     PhoneQueueSelector #phone-queue-hint {
-        height: 2;
+        height: 0;
         color: $text-muted;
+        margin: 0;
     }
 
     PhoneQueueSelector #phone-queue-empty {
         height: 2;
         color: $warning;
         text-style: italic;
+        content-align: center middle;
+        text-align: center;
     }
 
     PhoneQueueSelector #phone-queue-list {
         height: 1fr;
+        padding: 0;
+    }
+
+    /* Card-like option rows: taller, padded, clear selected highlight. */
+    PhoneQueueSelector OptionList > Option {
+        height: auto;
+        min-height: 5;
+        padding: 1 2;
+    }
+
+    PhoneQueueSelector OptionList > Option.--highlight {
+        background: $primary-darken-2;
+        text-style: bold;
     }
     """
 
@@ -59,10 +75,6 @@ class PhoneQueueSelector(Widget):
         self._is_adjusting_highlight = False
 
     def compose(self) -> ComposeResult:
-        yield Static(
-            "Only jobs owned by the configured cluster user can be selected.",
-            id="phone-queue-hint",
-        )
         yield Static(_EMPTY_MESSAGE, id="phone-queue-empty")
         yield OptionList(id="phone-queue-list")
 
@@ -202,10 +214,7 @@ class PhoneQueueSelector(Widget):
             if is_current_user
             else f"bold {_NON_SELECTABLE_JOB_STYLE}"
         )
-        title.append(
-            job.job_id,
-            style=title_style,
-        )
+        title.append(job.job_id, style=title_style)
         title.append("  ")
         title.append(
             job.name or "Unnamed job",
@@ -224,33 +233,32 @@ class PhoneQueueSelector(Widget):
             if is_current_user
             else _NON_SELECTABLE_JOB_STYLE
         )
-        summary.append(
-            job.state or "?",
-            style=state_style,
-        )
-        summary.append(" • ")
+        summary.append(job.state or "?", style=state_style)
+        summary.append(" | ")
         summary.append(job.user or "?", style=user_style)
-        summary.append(" • ")
+        summary.append(" | ")
         summary.append(job.partition or "?")
-        summary.append(" • ")
-        summary.append(job.time or "—")
+        summary.append(" | ")
+        summary.append(job.time or "-")
 
         detail = Text(style=base_style or "dim")
         if job.state.strip().upper() in _RUNNING_OR_COMPLETING_STATES:
             detail.append(f"{job.cpus_display} CPU")
-            detail.append(" • ")
+            detail.append(" | ")
             detail.append(job.ram_display)
-            detail.append(" • ")
+            detail.append(" | ")
             detail.append(f"{job.gpus_display} GPU")
             if job.node_list.strip():
-                detail.append(" • ")
+                detail.append(" | ")
                 detail.append(job.node_list)
         elif job.reason:
             detail.append(job.reason)
         else:
             detail.append("No extra details")
 
-        return Group(title, summary, detail)
+        # Blank separator makes each option read as a distinct card.
+        separator = Text(" ")
+        return Group(title, summary, detail, separator)
 
     def _is_selectable_job(self, job: JobInfo) -> bool:
         return user_matches_allowed_owner(job.user, self._allowed_user)
