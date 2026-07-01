@@ -8,8 +8,8 @@ import subprocess
 from textual import work  # type: ignore[reportMissingImports]
 from textual.app import ComposeResult  # type: ignore[reportMissingImports]
 from textual.containers import (  # type: ignore[reportMissingImports]
+    Grid,
     Horizontal,
-    Vertical,
 )
 from textual.message import Message  # type: ignore[reportMissingImports]
 from textual.widget import Widget  # type: ignore[reportMissingImports]
@@ -60,23 +60,6 @@ class LogViewer(Widget):
         padding: 1 1;
     }
 
-    LogViewer.phone-compact #job-id-bar {
-        height: auto;
-        grid-size: 1;
-        padding: 0 0 1 0;
-    }
-
-    LogViewer.phone-compact #job-id-bar Button {
-        height: 5;
-        min-height: 5;
-        margin: 0 0 1 0;
-    }
-
-    LogViewer.phone-compact #job-id-label {
-        height: 1;
-        margin: 0 0 1 0;
-    }
-
     LogViewer.phone-compact #log-placeholder {
         height: auto;
         min-height: 2;
@@ -86,6 +69,23 @@ class LogViewer(Widget):
     LogViewer.phone-compact RichLog {
         min-height: 8;
         padding: 0 1;
+    }
+
+    LogViewer.phone-compact #log-scroll-bar {
+        layout: grid;
+        grid-size: 4 1;
+        grid-columns: 1fr 1fr 1fr 1fr;
+        grid-gutter: 1;
+        height: 3;
+        padding: 0 1;
+    }
+
+    LogViewer.phone-compact #log-scroll-bar Button {
+        width: 1fr;
+        min-width: 0;
+        height: 3;
+        min-height: 3;
+        margin: 0;
     }
     """
 
@@ -109,9 +109,11 @@ class LogViewer(Widget):
 
     def compose(self) -> ComposeResult:
         if self._compact:
-            with Vertical(id="job-id-bar"):
-                yield Label("Select a queue job, then tap Job Log.", id="job-id-label")
-                yield Button("Copy", variant="default", id="copy-btn")
+            # No job-id bar or Copy button on the phone: the placeholder below
+            # already instructs, and dropping them hands the freed rows to the
+            # 1fr RichLog so the log pane is as large as possible. (Copy copied
+            # to the *host* Mac's clipboard, not the phone's, so it was removed.)
+            pass
         else:
             with Horizontal(id="job-id-bar"):
                 yield Label("Job ID:", id="job-id-label")
@@ -123,6 +125,16 @@ class LogViewer(Widget):
             id="log-placeholder",
         )
         yield RichLog(highlight=True, markup=True, auto_scroll=True)
+        if self._compact:
+            # Touch can't scroll an alt-screen TUI over xterm, so give the phone
+            # explicit tap controls that drive the RichLog scroll directly. Grid
+            # (not Horizontal) so the four buttons split the narrow phone width
+            # evenly instead of overflowing off the right edge.
+            with Grid(id="log-scroll-bar"):
+                yield Button("Top", id="log-scroll-top")
+                yield Button("↑", id="log-scroll-up")
+                yield Button("↓", id="log-scroll-down")
+                yield Button("Bottom", id="log-scroll-end")
 
     def on_unmount(self) -> None:
         self.stop_follow()
@@ -180,6 +192,18 @@ class LogViewer(Widget):
             self._submit_job_id(job_id_input.value)
         elif event.button.id == "copy-btn":
             self.copy_log_content()
+        elif event.button.id == "log-scroll-top":
+            self._rich_log.scroll_home()
+        elif event.button.id == "log-scroll-up":
+            self._rich_log.scroll_relative(y=-self._scroll_step(), animate=False)
+        elif event.button.id == "log-scroll-down":
+            self._rich_log.scroll_relative(y=self._scroll_step(), animate=False)
+        elif event.button.id == "log-scroll-end":
+            self._rich_log.scroll_end()
+
+    def _scroll_step(self) -> int:
+        """Rows moved per ↑/↓ tap — ~2 visible pages, a bigger jump than a page."""
+        return max(1, self._rich_log.size.height * 2)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "job-id-input":
