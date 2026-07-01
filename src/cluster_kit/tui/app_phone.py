@@ -33,6 +33,7 @@ from textual.containers import (  # type: ignore[reportMissingImports]
     Grid,
     Vertical,
 )
+from textual.theme import Theme  # type: ignore[reportMissingImports]
 from textual.widgets import (  # type: ignore[reportMissingImports]
     Button,
     Static,
@@ -82,6 +83,24 @@ from cluster_kit.tui.widgets.status_bar import (
 )
 
 PHONE_VIEWS = ("queue", "available", "logs")
+
+# GitHub-Dark palette, matching PHONE_TERMINAL_THEME in phone_access.py so the app
+# chrome (nav buttons, viewport border, status colors) reads as one product with
+# the terminal. Textual derives $boost, $text-muted, $primary-darken-2, etc. from
+# these, so the existing PHONE_CSS selectors keep working with no TCSS changes.
+GITHUB_DARK_THEME = Theme(
+    name="cluster-github-dark",
+    primary="#58a6ff",  # blue — viewport border ($primary)
+    secondary="#bc8cff",  # purple
+    accent="#1f6feb",  # deeper blue — active nav fill ($accent)
+    success="#3fb950",
+    warning="#d29922",
+    error="#ff7b72",
+    background="#0d1117",
+    surface="#161b22",
+    panel="#21262d",
+    dark=True,
+)
 
 
 class PhoneClusterTUI(App[None]):
@@ -146,6 +165,8 @@ class PhoneClusterTUI(App[None]):
                     )
 
     def on_mount(self) -> None:
+        self.register_theme(GITHUB_DARK_THEME)
+        self.theme = "cluster-github-dark"
         self._set_active_view("queue")
         self._test_connection_on_mount()
         self.set_interval(self.refresh_interval, self.action_refresh)

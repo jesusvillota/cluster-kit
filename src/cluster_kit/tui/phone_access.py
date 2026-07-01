@@ -278,7 +278,10 @@ def build_tailscale_serve_command(config: PhoneAccessConfig) -> str:
 
 
 # xterm.js client options passed to ttyd so the terminal is legible on a phone
-# without pinch-zooming. Large font + matching dark theme = fewer, bigger columns.
+# without pinch-zooming. xterm lays glyphs on a fixed-width grid, so the font MUST
+# be monospace — a proportional stack strands narrow letters in wide cells and
+# produces ragged gaps between letters. fontSize is the calibration knob for the
+# iPhone column fit: bump it down if content overflows, up if it looks small.
 # ponytail: hard-coded phone-friendly defaults; expose via env vars only if someone
 # actually needs a different size.
 PHONE_TERMINAL_THEME = (
@@ -293,12 +296,11 @@ PHONE_TERMINAL_THEME = (
 
 PHONE_TERMINAL_CLIENT_OPTIONS: tuple[tuple[str, str], ...] = (
     ("fontSize", "23"),
-    ("lineHeight", "1.05"),
-    ("letterSpacing", "-2"),
+    ("lineHeight", "1.2"),
+    ("letterSpacing", "0"),
     (
         "fontFamily",
-        "-apple-system, BlinkMacSystemFont, 'SF Pro Text', "
-        "'Helvetica Neue', Arial, sans-serif",
+        "ui-monospace, 'SF Mono', Menlo, Monaco, 'Courier New', monospace",
     ),
     ("fontWeight", "500"),
     ("fontWeightBold", "700"),
