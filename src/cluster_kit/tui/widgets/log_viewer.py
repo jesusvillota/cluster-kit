@@ -73,10 +73,10 @@ class LogViewer(Widget):
 
     LogViewer.phone-compact #log-scroll-bar {
         layout: grid;
-        grid-size: 4 1;
+        grid-size: 4 2;
         grid-columns: 1fr 1fr 1fr 1fr;
         grid-gutter: 1;
-        height: 3;
+        height: 7;
         padding: 0 1;
     }
 
@@ -128,13 +128,17 @@ class LogViewer(Widget):
         if self._compact:
             # Touch can't scroll an alt-screen TUI over xterm, so give the phone
             # explicit tap controls that drive the RichLog scroll directly. Grid
-            # (not Horizontal) so the four buttons split the narrow phone width
+            # (not Horizontal) so the buttons split the narrow phone width
             # evenly instead of overflowing off the right edge.
             with Grid(id="log-scroll-bar"):
                 yield Button("Top", id="log-scroll-top")
-                yield Button("↑", id="log-scroll-up")
                 yield Button("↓", id="log-scroll-down")
+                yield Button("↑", id="log-scroll-up")
                 yield Button("Bottom", id="log-scroll-end")
+                yield Button("←←", id="log-scroll-left-big")
+                yield Button("←", id="log-scroll-left")
+                yield Button("→", id="log-scroll-right")
+                yield Button("→→", id="log-scroll-right-big")
 
     def on_unmount(self) -> None:
         self.stop_follow()
@@ -170,7 +174,7 @@ class LogViewer(Widget):
         )
 
     def _write_line(self, line: str, raw_line: str | None = None) -> None:
-        self._rich_log.write(line)
+        self._rich_log.write(line, shrink=False)
         self._log_lines.append(line)
         if raw_line is not None:
             self._raw_log_lines.append(raw_line)
@@ -198,12 +202,32 @@ class LogViewer(Widget):
             self._rich_log.scroll_relative(y=-self._scroll_step(), animate=False)
         elif event.button.id == "log-scroll-down":
             self._rich_log.scroll_relative(y=self._scroll_step(), animate=False)
+        elif event.button.id == "log-scroll-left-big":
+            self._rich_log.scroll_relative(
+                x=-self._horizontal_scroll_step(big=True), animate=False
+            )
+        elif event.button.id == "log-scroll-left":
+            self._rich_log.scroll_relative(
+                x=-self._horizontal_scroll_step(), animate=False
+            )
+        elif event.button.id == "log-scroll-right":
+            self._rich_log.scroll_relative(
+                x=self._horizontal_scroll_step(), animate=False
+            )
+        elif event.button.id == "log-scroll-right-big":
+            self._rich_log.scroll_relative(
+                x=self._horizontal_scroll_step(big=True), animate=False
+            )
         elif event.button.id == "log-scroll-end":
             self._rich_log.scroll_end()
 
     def _scroll_step(self) -> int:
         """Rows moved per ↑/↓ tap — ~2 visible pages, a bigger jump than a page."""
         return max(1, self._rich_log.size.height * 2)
+
+    def _horizontal_scroll_step(self, *, big: bool = False) -> int:
+        width = max(1, self._rich_log.size.width)
+        return width if big else max(1, width // 4)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "job-id-input":
@@ -259,7 +283,7 @@ class LogViewer(Widget):
         for line in content.splitlines():
             self._raw_log_lines.append(line)
             colored = colorize_log_line(line)
-            rich_log.write(colored)
+            rich_log.write(colored, shrink=False)
             self._log_lines.append(colored)
 
     def toggle_stderr(self) -> None:

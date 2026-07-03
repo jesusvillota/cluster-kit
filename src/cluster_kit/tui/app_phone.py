@@ -150,7 +150,7 @@ class PhoneClusterTUI(App[None]):
                 with Vertical(id="phone-logs-view", classes="phone-view"):
                     yield LogViewer(compact=True)
             with Vertical(id="phone-action-dock"):
-                with Grid(id="phone-action-row-primary"):
+                with Grid(id="phone-action-row-queue-primary"):
                     yield Button(
                         "Refresh", variant="primary", id="phone-action-refresh"
                     )
@@ -158,10 +158,14 @@ class PhoneClusterTUI(App[None]):
                     yield Button(
                         "Cancel", variant="error", id="phone-action-cancel"
                     )
-                with Grid(id="phone-action-row-secondary"):
-                    yield Button("Out/Err", id="phone-action-toggle-stderr")
+                with Grid(id="phone-action-row-queue-secondary"):
                     yield Button(
                         "Sync", variant="success", id="phone-action-sync"
+                    )
+                with Grid(id="phone-action-row-log"):
+                    yield Button("Out/Err", id="phone-action-toggle-stderr")
+                    yield Button(
+                        "Cancel", variant="error", id="phone-action-cancel-log"
                     )
 
     def on_mount(self) -> None:
@@ -183,6 +187,10 @@ class PhoneClusterTUI(App[None]):
                 view_name == view,
                 "active-view",
             )
+        self.query_one("#phone-action-dock").display = view != "available"
+        self.query_one("#phone-action-row-queue-primary").display = view == "queue"
+        self.query_one("#phone-action-row-queue-secondary").display = view == "queue"
+        self.query_one("#phone-action-row-log").display = view == "logs"
 
     @work(thread=True)
     def _test_connection_on_mount(self) -> None:  # type: ignore[return]
@@ -259,10 +267,13 @@ class PhoneClusterTUI(App[None]):
         queue_selector = self.query_one(PhoneQueueSelector)
         log_viewer = self.query_one(LogViewer)
         has_selected_job = self._get_selected_job() is not None
+        self.query_one("#phone-action-cancel", Button).disabled = not has_selected_job
+        self.query_one(
+            "#phone-action-cancel-log", Button
+        ).disabled = not has_selected_job
         self.query_one(
             "#phone-action-selected-logs", Button
         ).disabled = not has_selected_job
-        self.query_one("#phone-action-cancel", Button).disabled = not has_selected_job
         self.query_one("#phone-action-toggle-stderr", Button).disabled = (
             log_viewer.current_job_id is None or log_viewer.current_file is None
         )
@@ -271,8 +282,9 @@ class PhoneClusterTUI(App[None]):
             if has_selected_job
             else queue_selector.selection_unavailable_reason
         )
-        self.query_one("#phone-action-selected-logs", Button).tooltip = tooltip
         self.query_one("#phone-action-cancel", Button).tooltip = tooltip
+        self.query_one("#phone-action-cancel-log", Button).tooltip = tooltip
+        self.query_one("#phone-action-selected-logs", Button).tooltip = tooltip
 
     def _switch_to_logs(self, job_id: str, log_file: LogFile) -> None:
         self._set_active_view("logs")
@@ -376,7 +388,7 @@ class PhoneClusterTUI(App[None]):
             self.action_refresh()
         elif button_id == "phone-action-selected-logs":
             self.action_view_logs()
-        elif button_id == "phone-action-cancel":
+        elif button_id in {"phone-action-cancel", "phone-action-cancel-log"}:
             self.action_cancel_job()
         elif button_id == "phone-action-toggle-stderr":
             self.action_toggle_stderr()

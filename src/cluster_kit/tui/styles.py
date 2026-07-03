@@ -290,8 +290,9 @@ ConnectionStatus.error {
     border-top: round $primary;
 }
 
-#phone-action-row-primary,
-#phone-action-row-secondary {
+#phone-action-row-queue-primary,
+#phone-action-row-queue-secondary,
+#phone-action-row-log {
     layout: grid;
     grid-size: 2 1;
     grid-columns: 1fr 1fr;
@@ -302,12 +303,18 @@ ConnectionStatus.error {
     margin: 0 0 1 0;
 }
 
-#phone-action-row-primary {
+#phone-action-row-queue-primary {
     grid-size: 3 1;
     grid-columns: 1fr 1fr 1fr;
 }
 
-#phone-action-row-secondary {
+#phone-action-row-queue-secondary {
+    grid-size: 1 1;
+    grid-columns: 1fr;
+    margin: 0;
+}
+
+#phone-action-row-log {
     margin: 0;
 }
 
