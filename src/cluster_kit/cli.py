@@ -485,6 +485,111 @@ def _cmd_notify(args: argparse.Namespace) -> None:
     print(f"[cluster-kit] sent queue summary ({len(jobs)} jobs) to {recipient}")
 
 
+def _resources_snapshot(nodes, jobs) -> dict:
+    """Assemble the resources JSON payload from parsed node and queue rows."""
+    from dataclasses import asdict
+
+    from cluster_kit.launch.launcher import PARTITION_DEFAULTS
+
+    return {
+        "nodes": [asdict(node) for node in nodes],
+        "queue": [asdict(job) for job in jobs],
+        "partitions": {
+            name: {"max_cpus": cpus, "max_mem": mem, "max_time": time_limit}
+            for name, (cpus, mem, time_limit) in PARTITION_DEFAULTS.items()
+        },
+    }
+
+
+def _cmd_resources(args: argparse.Namespace) -> None:
+    """Show per-node availability, the user's queue, and partition ceilings."""
+    import json
+
+    from cluster_kit.config import get_cluster_user, load_config
+    from cluster_kit.tui.backend.available_resources import fetch_available_resources
+    from cluster_kit.tui.backend.queue_parser import (
+        fetch_queue,
+        parse_squeue_output,
+    )
+
+    load_config()
+    user = args.user or get_cluster_user()
+
+    nodes = fetch_available_resources()
+    queue_result = fetch_queue(user=user)
+    if not queue_result.success:
+        print(
+            f"[cluster-kit] queue fetch failed: {queue_result.error_message}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    jobs = parse_squeue_output(queue_result.stdout)
+
+    snapshot = _resources_snapshot(nodes, jobs)
+
+    if args.json:
+        print(json.dumps(snapshot, indent=2))
+        return
+
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+
+    node_table = Table(title="Node availability (free = total - allocated)")
+    for column in ("Node", "CPUs free", "Mem free (GB)", "GPUs free"):
+        node_table.add_column(column)
+    for node in nodes:
+        node_table.add_row(
+            node.node_name,
+            f"{node.available_cpus}/{node.total_cpus}",
+            f"{node.available_memory_gb}/{node.total_memory_gb}",
+            f"{node.available_gpus}/{node.total_gpus}",
+        )
+    console.print(node_table)
+
+    queue_table = Table(title=f"Queue ({user}): {len(jobs)} jobs")
+    for column in ("JobID", "Name", "Partition", "State", "Time", "Reason"):
+        queue_table.add_column(column)
+    for job in jobs:
+        queue_table.add_row(
+            job.job_id, job.name, job.partition, job.state, job.time, job.reason
+        )
+    console.print(queue_table)
+
+    partition_table = Table(title="Partition ceilings")
+    for column in ("Partition", "Max CPUs", "Max mem", "Max time"):
+        partition_table.add_column(column)
+    for name, limits in snapshot["partitions"].items():
+        partition_table.add_row(
+            name,
+            str(limits["max_cpus"]),
+            limits["max_mem"],
+            limits["max_time"],
+        )
+    console.print(partition_table)
+
+
+def _build_resources_parser(subparsers: argparse._SubParsersAction) -> None:
+    """Build the 'resources' subcommand."""
+    resources_parser = subparsers.add_parser(
+        "resources",
+        help="Show node availability, queue, and partition ceilings",
+    )
+    resources_parser.add_argument(
+        "--user",
+        default=None,
+        help="squeue -u target (default: configured CLUSTER_USER)",
+    )
+    resources_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Emit one JSON object {nodes, queue, partitions} on stdout",
+    )
+    resources_parser.set_defaults(func=_cmd_resources)
+
+
 def _build_notify_parser(subparsers: argparse._SubParsersAction) -> None:
     """Build the 'notify' subcommand."""
     notify_parser = subparsers.add_parser(
@@ -1210,6 +1315,7 @@ def build_parser() -> argparse.ArgumentParser:
     _build_exec_parser(subparsers)
     _build_serve_parser(subparsers)
     _build_notify_parser(subparsers)
+    _build_resources_parser(subparsers)
 
     return parser
 
