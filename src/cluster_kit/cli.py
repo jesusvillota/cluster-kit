@@ -447,7 +447,7 @@ def _cmd_notify(args: argparse.Namespace) -> None:
     )
 
     load_config()  # ensure .env is loaded so CLUSTER_NOTIFY_* resolve
-    user = args.user or get_cluster_user()
+    user = None if args.all_users else (args.user or get_cluster_user())
     webhook = args.webhook or os.getenv("CLUSTER_NOTIFY_WEBHOOK")
     recipient = args.to or os.getenv("CLUSTER_NOTIFY_TO")
 
@@ -508,6 +508,12 @@ def _build_notify_parser(subparsers: argparse._SubParsersAction) -> None:
         "--user",
         default=None,
         help="squeue -u target (default: configured CLUSTER_USER)",
+    )
+    notify_parser.add_argument(
+        "--all-users",
+        action="store_true",
+        default=False,
+        help="Show the whole cluster queue, not just one user's jobs",
     )
     notify_parser.add_argument(
         "--state",

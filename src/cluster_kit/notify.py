@@ -23,19 +23,27 @@ class NotifyError(RuntimeError):
     """Raised when the webhook rejects the message."""
 
 
-def build_summary(jobs: list[JobInfo], user: str) -> str:
-    """Render queue rows as a compact plain-text summary (no markup)."""
+def build_summary(jobs: list[JobInfo], user: str | None) -> str:
+    """Render queue rows as a compact plain-text summary (no markup).
+
+    When *user* is ``None`` (all-users mode), each row is prefixed with the
+    job owner so the recipient can tell whose job is whose.
+    """
     running = sum(
         1 for j in jobs if j.state.strip().upper() in RUNNING_STATES_WITH_ALLOCATIONS
     )
     pending = len(jobs) - running
-    lines = [f"🐋 cluster queue ({user}): {running} running, {pending} pending"]
+    who = user if user else "all users"
+    lines = [f"cluster queue ({who}): {running} running, {pending} pending"]
     for j in jobs:
         if j.state.strip().upper() in _ACTIVE_STATES:
             tag = j.state
         else:
             tag = f"{j.state} {j.reason}".strip()
-        lines.append(f"• {j.job_id} {j.name} [{j.partition}] {tag} {j.time}")
+        row = f"• {j.job_id} {j.name} [{j.partition}] {tag} {j.time}"
+        if user is None:
+            row = f"• {j.user} {j.job_id} {j.name} [{j.partition}] {tag} {j.time}"
+        lines.append(row)
     return "\n".join(lines)
 
 
