@@ -3,6 +3,7 @@
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from cluster_kit import __version__
 from cluster_kit.config import load_config, validate_config
@@ -107,6 +108,24 @@ def _cmd_sync_cp(args: argparse.Namespace) -> None:
         recursive=args.recursive,
     )
     success = transfer.copy(args.src, args.dst)
+    if not success:
+        sys.exit(1)
+
+
+def _cmd_sync_mirror(args: argparse.Namespace) -> None:
+    """Mirror data directories between the cluster and the PC."""
+    from cluster_kit.sync.mirror import MirrorError, run_mirror
+
+    try:
+        success = run_mirror(
+            Path(args.manifest),
+            dataset=args.dataset,
+            dry_run=args.dry_run,
+            verbose=args.verbose,
+        )
+    except MirrorError as e:
+        print(f"[cluster-kit] Error: {e}", file=sys.stderr)
+        sys.exit(2)
     if not success:
         sys.exit(1)
 
@@ -765,6 +784,36 @@ def _build_sync_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Show detailed output",
     )
     cp_parser.set_defaults(func=_cmd_sync_cp)
+
+    mirror_parser = sync_sub.add_parser(
+        "mirror",
+        help="Mirror data directories between the cluster and the PC",
+    )
+    mirror_parser.add_argument(
+        "--manifest",
+        default="mirror.yaml",
+        metavar="PATH",
+        help="Mirror manifest file (default: ./mirror.yaml)",
+    )
+    mirror_parser.add_argument(
+        "--dataset",
+        default=None,
+        metavar="NAME",
+        help="Mirror only this dataset (default: all in manifest)",
+    )
+    mirror_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Preview transfers without copying or recording state",
+    )
+    mirror_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help="Show rsync commands and file lists",
+    )
+    mirror_parser.set_defaults(func=_cmd_sync_mirror)
 
 
 def _build_tui_parser(subparsers: argparse._SubParsersAction) -> None:
