@@ -8,6 +8,15 @@ The rsync runs ON the PC against the cluster, so data flows directly over
 the CEMFI LAN and never routes through this machine; we only orchestrate
 via ``ssh pc '...'``.
 
+For real (non-dry-run) transfers the two-pass rsync is submitted as a
+*detached job* on the PC (the same setsid+nohup mechanism as
+``cluster-kit job submit``) rather than run synchronously over one SSH
+call: GB-scale first syncs can take hours, and a single held-open SSH
+connection has been observed to drop with OpenSSH's own "Timeout, server
+not responding" during a long, mostly one-directional transfer. Detaching
+means a dropped connection only interrupts our polling loop — the rsync
+keeps running on the PC regardless, and the next poll picks it back up.
+
 Datasets come from a manifest in the consuming repo:
 
     # mirror.yaml
@@ -28,6 +37,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import shlex
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -35,14 +45,21 @@ import yaml
 from rich.console import Console
 
 from cluster_kit.config import load_config
+from cluster_kit.jobs.manager import JobError, job_status, read_log, submit
 from cluster_kit.utils.ssh import RemoteUnreachableError, ensure_reachable, run_remote
 
 console = Console()
 
 MIRROR_STATE_PATH = Path.home() / ".cache" / "cluster-kit" / "mirror_state.json"
 
-# rsync on GB-scale first runs needs far more than the ssh default (30s).
-_RSYNC_TIMEOUT = 3600
+# Dry runs only stat/compare files (proportional to file count, not data
+# volume) so a single blocking SSH call is fine; give it generous headroom.
+_DRY_RUN_TIMEOUT = 3600
+
+# How often to poll the detached mirror job, and how long to keep polling
+# before giving up supervision (the remote job keeps running either way).
+_POLL_INTERVAL = 10
+_MAX_WAIT = 6 * 3600
 
 
 class MirrorError(RuntimeError):
@@ -97,6 +114,30 @@ def _rsync_cmd(src: str, dst: str, excludes: list[str], dry_run: bool) -> str:
     return " ".join(parts)
 
 
+def _dry_run_dataset(
+    name: str, pc_dir: str, cluster_dir: str, excludes: list[str], *, pc_config
+) -> bool:
+    """Preview both passes synchronously; never writes state."""
+    passes = [
+        ("cluster→pc", f"{cluster_dir}/", f"{pc_dir}/"),
+        ("pc→cluster", f"{pc_dir}/", f"{cluster_dir}/"),
+    ]
+    for label, src, dst in passes:
+        cmd = _rsync_cmd(src, dst, excludes, dry_run=True)
+        if label == "cluster→pc":
+            cmd = f"mkdir -p {shlex.quote(pc_dir)} && {cmd}"
+        console.print(f"[dim]{name} {label}: {cmd}[/dim]")
+        result = run_remote(cmd, config=pc_config, timeout=_DRY_RUN_TIMEOUT)
+        if result.stdout.strip():
+            console.print(result.stdout.rstrip())
+        if result.returncode != 0:
+            detail = f"{label} failed: {result.stderr.strip()}"
+            console.print(f"[red]✗ {name}: {detail}[/red]")
+            return False
+    console.print(f"[green]✓ {name} (dry run)[/green]")
+    return True
+
+
 def mirror_dataset(
     name: str,
     spec: dict,
@@ -106,33 +147,63 @@ def mirror_dataset(
     dry_run: bool = False,
     verbose: bool = False,
 ) -> bool:
-    """Union-sync one dataset: cluster→pc, then pc→cluster. Runs on the PC."""
+    """Union-sync one dataset: cluster→pc, then pc→cluster.
+
+    The real transfer is submitted as a detached job on the PC and polled
+    to completion, so a dropped Mac↔PC SSH connection can't abort an
+    in-progress multi-hour transfer (see module docstring).
+    """
     excludes = spec.get("exclude") or []
     pc_dir = str(spec["pc"]).rstrip("/")
     cluster_dir = f"{cluster_from_pc}:{str(spec['cluster']).rstrip('/')}"
-    passes = [
-        ("cluster→pc", f"{cluster_dir}/", f"{pc_dir}/"),
-        ("pc→cluster", f"{pc_dir}/", f"{cluster_dir}/"),
-    ]
-    for label, src, dst in passes:
-        cmd = _rsync_cmd(src, dst, excludes, dry_run)
-        if label == "cluster→pc":
-            cmd = f"mkdir -p {shlex.quote(pc_dir)} && {cmd}"
-        if verbose or dry_run:
-            console.print(f"[dim]{name} {label}: {cmd}[/dim]")
-        result = run_remote(cmd, config=pc_config, timeout=_RSYNC_TIMEOUT)
-        if (verbose or dry_run) and result.stdout.strip():
-            console.print(result.stdout.rstrip())
-        if result.returncode != 0:
-            detail = f"{label} failed: {result.stderr.strip()}"
-            console.print(f"[red]✗ {name}: {detail}[/red]")
-            if not dry_run:
-                _write_state(name, False, detail)
-            return False
-    console.print(f"[green]✓ {name} mirrored[/green]")
-    if not dry_run:
-        _write_state(name, True, "")
-    return True
+
+    if dry_run:
+        return _dry_run_dataset(
+            name, pc_dir, cluster_dir, excludes, pc_config=pc_config
+        )
+
+    pass1 = _rsync_cmd(f"{cluster_dir}/", f"{pc_dir}/", excludes, dry_run=False)
+    pass2 = _rsync_cmd(f"{pc_dir}/", f"{cluster_dir}/", excludes, dry_run=False)
+    command = f"mkdir -p {shlex.quote(pc_dir)} && {pass1} && {pass2}"
+
+    handle = submit(command, name=f"mirror-{name}", config=pc_config)
+    console.print(f"[dim]{name}: submitted as PC job {handle.job_id}[/dim]")
+
+    deadline = time.monotonic() + _MAX_WAIT
+    while time.monotonic() < deadline:
+        try:
+            status = job_status(handle.job_id, config=pc_config)
+        except JobError as exc:
+            if verbose:
+                console.print(f"[dim]{name}: poll failed, retrying: {exc}[/dim]")
+            time.sleep(_POLL_INTERVAL)
+            continue
+
+        state = status.get("state")
+        if state == "RUNNING":
+            time.sleep(_POLL_INTERVAL)
+            continue
+        if state == "COMPLETED":
+            console.print(f"[green]✓ {name} mirrored ({handle.job_id})[/green]")
+            _write_state(name, True, "")
+            return True
+
+        detail = f"job {handle.job_id} ended {state}"
+        try:
+            detail += f":\n{read_log(handle.job_id, lines=20, config=pc_config)}"
+        except JobError:
+            pass
+        console.print(f"[red]✗ {name}: {detail}[/red]")
+        _write_state(name, False, detail)
+        return False
+
+    detail = (
+        f"gave up polling job {handle.job_id} after {_MAX_WAIT}s; "
+        "it may still be running"
+    )
+    console.print(f"[yellow]⚠ {name}: {detail}[/yellow]")
+    _write_state(name, False, detail)
+    return False
 
 
 def run_mirror(

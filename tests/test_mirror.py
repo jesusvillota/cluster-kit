@@ -79,14 +79,16 @@ class TestRsyncCmd:
         assert "--exclude '*.tmp'" in cmd
 
 
-class TestMirrorDataset:
+class TestDryRunDataset:
+    """Dry runs stay synchronous (fast: proportional to file count, not data)."""
+
     SPEC = {
         "cluster": "/mnt/beegfs/out/",
         "pc": "/home/u/out",
         "exclude": [],
     }
 
-    def _run(self, results=None, **kwargs):
+    def _run(self, results=None):
         commands: list[str] = []
 
         def fake_run_remote(command, **kw):
@@ -100,7 +102,7 @@ class TestMirrorDataset:
                 self.SPEC,
                 cluster_from_pc="u@cluster",
                 pc_config=None,
-                **kwargs,
+                dry_run=True,
             )
         return ok, commands
 
@@ -108,33 +110,135 @@ class TestMirrorDataset:
         ok, commands = self._run()
         assert ok is True
         assert len(commands) == 2
-        # pass 1: cluster→pc, with mkdir; trailing slashes both ends
         assert commands[0].startswith("mkdir -p /home/u/out && rsync")
         assert "u@cluster:/mnt/beegfs/out/ /home/u/out/" in commands[0]
-        # pass 2: pc→cluster
         assert "/home/u/out/ u@cluster:/mnt/beegfs/out/" in commands[1]
-        assert all("--update" in c and "--delete" not in c for c in commands)
+        assert all("--update" in c and "--dry-run" in c for c in commands)
+        assert all("--delete" not in c for c in commands)
 
-    def test_success_writes_state(self):
+    def test_failed_pass_stops_and_never_writes_state(self, state_path: Path):
+        ok, commands = self._run(results=[1])
+        assert ok is False
+        assert len(commands) == 1
+        assert not state_path.exists()
+
+    def test_dry_run_never_writes_state(self, state_path: Path):
         self._run()
+        assert not state_path.exists()
+
+
+class TestRealMirrorDataset:
+    """Real transfers submit a detached PC job and poll it to completion."""
+
+    SPEC = {
+        "cluster": "/mnt/beegfs/out/",
+        "pc": "/home/u/out",
+        "exclude": [],
+    }
+
+    def _run(self, *, states, submit_side_effect=None):
+        from cluster_kit.jobs.manager import JobHandle
+
+        handle = JobHandle(
+            job_id="mirror-whale_outputs_x",
+            job_dir="/home/u/.cluster_kit/jobs/mirror-whale_outputs_x",
+            log_path="/home/u/.cluster_kit/jobs/mirror-whale_outputs_x/log",
+            command="mkdir -p ...",
+        )
+        submit_calls: list[str] = []
+
+        def fake_submit(command, *, name, config):
+            submit_calls.append(command)
+            if submit_side_effect:
+                raise submit_side_effect
+            return handle
+
+        status_iter = iter(states)
+
+        def fake_job_status(job_id, *, config):
+            return next(status_iter)
+
+        with (
+            patch.object(mirror, "submit", fake_submit),
+            patch.object(mirror, "job_status", fake_job_status),
+            patch.object(mirror, "read_log", return_value="tail of log"),
+            patch.object(mirror, "time") as mock_time,
+        ):
+            mock_time.monotonic.side_effect = range(0, 10_000, 1)
+            mock_time.sleep = lambda *_: None
+            ok = mirror_dataset(
+                "whale_outputs",
+                self.SPEC,
+                cluster_from_pc="u@cluster",
+                pc_config=None,
+            )
+        return ok, submit_calls
+
+    def test_submits_combined_two_pass_command(self):
+        ok, submit_calls = self._run(states=[{"state": "COMPLETED", "rc": "0"}])
+        assert ok is True
+        assert len(submit_calls) == 1
+        command = submit_calls[0]
+        assert command.startswith("mkdir -p /home/u/out && rsync")
+        assert " && rsync" in command.split("&&", 1)[1]
+        assert "u@cluster:/mnt/beegfs/out/ /home/u/out/" in command
+        assert "/home/u/out/ u@cluster:/mnt/beegfs/out/" in command
+
+    def test_polls_while_running_then_succeeds(self):
+        ok, _ = self._run(
+            states=[
+                {"state": "RUNNING"},
+                {"state": "RUNNING"},
+                {"state": "COMPLETED", "rc": "0"},
+            ]
+        )
+        assert ok is True
         state = read_mirror_state()
         assert state["whale_outputs"]["ok"] is True
         assert state["whale_outputs"]["last_success"]
 
-    def test_failed_pass_writes_error_state_and_stops(self):
-        ok, commands = self._run(results=[1])
+    def test_failed_job_writes_error_state_with_log_tail(self):
+        ok, _ = self._run(states=[{"state": "FAILED", "rc": "1"}])
         assert ok is False
-        assert len(commands) == 1
         state = read_mirror_state()
         assert state["whale_outputs"]["ok"] is False
-        assert "boom" in state["whale_outputs"]["detail"]
+        assert "tail of log" in state["whale_outputs"]["detail"]
         assert "last_success" not in state["whale_outputs"]
 
-    def test_dry_run_never_writes_state(self, state_path: Path):
-        ok, commands = self._run(dry_run=True)
+    def test_died_job_is_treated_as_failure(self):
+        ok, _ = self._run(states=[{"state": "DIED"}])
+        assert ok is False
+        assert read_mirror_state()["whale_outputs"]["ok"] is False
+
+    def test_poll_error_retries_instead_of_failing(self):
+        from cluster_kit.jobs.manager import JobError
+
+        calls = {"n": 0}
+
+        def fake_job_status(job_id, *, config):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise JobError("ssh blip")
+            return {"state": "COMPLETED", "rc": "0"}
+
+        from cluster_kit.jobs.manager import JobHandle
+
+        handle = JobHandle(job_id="x", job_dir="/d", log_path="/d/log", command="cmd")
+        with (
+            patch.object(mirror, "submit", return_value=handle),
+            patch.object(mirror, "job_status", fake_job_status),
+            patch.object(mirror, "time") as mock_time,
+        ):
+            mock_time.monotonic.side_effect = range(0, 10_000, 1)
+            mock_time.sleep = lambda *_: None
+            ok = mirror_dataset(
+                "whale_outputs",
+                self.SPEC,
+                cluster_from_pc="u@cluster",
+                pc_config=None,
+            )
         assert ok is True
-        assert all("--dry-run" in c for c in commands)
-        assert not state_path.exists()
+        assert calls["n"] == 2
 
 
 class TestRunMirror:
