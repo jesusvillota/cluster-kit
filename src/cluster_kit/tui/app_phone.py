@@ -40,6 +40,7 @@ from textual.widgets import (  # type: ignore[reportMissingImports]
 )
 
 from cluster_kit.config import get_cluster_user
+from cluster_kit.sync.mirror import read_mirror_state
 from cluster_kit.tui.backend.available_resources import (
     AvailableResourceRow,
     fetch_available_resources,
@@ -54,6 +55,7 @@ from cluster_kit.tui.backend.log_discovery import (
     discover_log_files,
     parse_log_files,
 )
+from cluster_kit.tui.backend.pc_jobs import PcJobsResult, fetch_pc_jobs
 from cluster_kit.tui.backend.queue_parser import (
     JobInfo,
     fetch_queue,
@@ -75,14 +77,16 @@ from cluster_kit.tui.widgets.available_resources_table import (
     AvailableResourcesTable,
 )
 from cluster_kit.tui.widgets.log_viewer import LogViewer
+from cluster_kit.tui.widgets.pc_jobs_table import PcJobsTable
 from cluster_kit.tui.widgets.phone_queue_selector import (
     PhoneQueueSelector,
 )
 from cluster_kit.tui.widgets.status_bar import (
     ConnectionStatus,
+    MirrorStatus,
 )
 
-PHONE_VIEWS = ("queue", "available", "logs")
+PHONE_VIEWS = ("queue", "available", "pc", "logs")
 
 # GitHub-Dark palette, matching PHONE_TERMINAL_THEME in phone_access.py so the app
 # chrome (nav buttons, viewport border, status colors) reads as one product with
@@ -140,13 +144,17 @@ class PhoneClusterTUI(App[None]):
             with Grid(id="phone-nav-row"):
                 yield Button("Queue", id="phone-nav-queue", classes="active-view")
                 yield Button("Nodes", id="phone-nav-available")
+                yield Button("PC", id="phone-nav-pc")
                 yield Button("Logs", id="phone-nav-logs")
             yield ConnectionStatus(id="phone-status")
+            yield MirrorStatus(id="phone-mirror-status")
             with Vertical(id="phone-views"):
                 with Vertical(id="phone-queue-view", classes="phone-view"):
                     yield PhoneQueueSelector()
                 with Vertical(id="phone-available-view", classes="phone-view"):
                     yield AvailableResourcesTable(compact=True)
+                with Vertical(id="phone-pc-view", classes="phone-view"):
+                    yield PcJobsTable(compact=True)
                 with Vertical(id="phone-logs-view", classes="phone-view"):
                     yield LogViewer(compact=True)
             with Vertical(id="phone-action-dock"):
@@ -175,6 +183,9 @@ class PhoneClusterTUI(App[None]):
         self._test_connection_on_mount()
         self.set_interval(self.refresh_interval, self.action_refresh)
         self.action_refresh()
+        # PC jobs are long-lived; poll at 3x the squeue interval.
+        self.set_interval(self.refresh_interval * 3, self._refresh_pc_jobs)
+        self._refresh_pc_jobs()
 
     def _set_active_view(self, view: str) -> None:
         if view not in PHONE_VIEWS:
@@ -187,7 +198,7 @@ class PhoneClusterTUI(App[None]):
                 view_name == view,
                 "active-view",
             )
-        self.query_one("#phone-action-dock").display = view != "available"
+        self.query_one("#phone-action-dock").display = view not in ("available", "pc")
         self.query_one("#phone-action-row-queue-primary").display = view == "queue"
         self.query_one("#phone-action-row-queue-secondary").display = view == "queue"
         self.query_one("#phone-action-row-log").display = view == "logs"
@@ -208,6 +219,15 @@ class PhoneClusterTUI(App[None]):
 
     def _mark_connection_error(self, message: str) -> None:
         self.query_one(ConnectionStatus).mark_error(message)
+
+    @work(thread=True, exclusive=True, group="pc_jobs")
+    def _refresh_pc_jobs(self) -> None:  # type: ignore[return]
+        result = fetch_pc_jobs()
+        self.call_from_thread(self._update_pc_jobs, result)
+
+    def _update_pc_jobs(self, result: PcJobsResult) -> None:
+        self.query_one(PcJobsTable).refresh_data(result.jobs, result.error)
+        self.query_one(MirrorStatus).update_from_state(read_mirror_state())
 
     @work(thread=True, exclusive=True)
     def action_refresh(self) -> None:  # type: ignore[return]
@@ -382,6 +402,8 @@ class PhoneClusterTUI(App[None]):
             self.action_show_view("queue")
         elif button_id == "phone-nav-available":
             self.action_show_view("available")
+        elif button_id == "phone-nav-pc":
+            self.action_show_view("pc")
         elif button_id == "phone-nav-logs":
             self.action_show_view("logs")
         elif button_id == "phone-action-refresh":

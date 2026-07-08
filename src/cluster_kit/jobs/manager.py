@@ -103,17 +103,27 @@ def _scp(local_paths: list[Path], remote_dir: str, config: ClusterConfig) -> Non
         raise JobError(f"upload failed: {result.stderr.strip()}")
 
 
+# Hosts whose jobctl.py was already verified this process; saves an SSH
+# round-trip per call, which matters for TUI polling.
+_jobctl_verified: set[tuple[str, str]] = set()
+
+
 def _ensure_jobctl(config: ClusterConfig) -> None:
     """Upload jobctl.py unless the remote copy already matches our version."""
+    key = (config.host, str(config.remote_base))
+    if key in _jobctl_verified:
+        return
     remote_path = f"{config.remote_base}/{_JOBCTL_REMOTE_REL}"
     result = run_remote(f"python3 {shlex.quote(remote_path)} --version", config=config)
     if result.returncode == 0 and result.stdout.strip() == str(JOBCTL_VERSION):
+        _jobctl_verified.add(key)
         return
     parent = str(Path(remote_path).parent)
     mkdir = run_remote(f"mkdir -p {shlex.quote(parent)}", config=config)
     if mkdir.returncode != 0:
         raise JobError(f"could not create {parent}: {mkdir.stderr.strip()}")
     _scp([_JOBCTL_SOURCE], parent, config)
+    _jobctl_verified.add(key)
 
 
 def _require_ssh_executor(config: ClusterConfig) -> None:

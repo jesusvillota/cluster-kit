@@ -200,6 +200,36 @@ class TestJobctlClassification:
 
 
 # ---------------------------------------------------------------------------
+# jobctl version-check caching
+# ---------------------------------------------------------------------------
+
+
+class TestJobctlCache:
+    def test_version_probe_runs_once_per_host(self):
+        from cluster_kit.jobs import manager
+        from cluster_kit.jobs.manager import list_jobs
+
+        manager._jobctl_verified.clear()
+        remote_calls: list[str] = []
+
+        def fake_run_remote(command, **kwargs):
+            remote_calls.append(command)
+            if "--version" in command:
+                return SimpleNamespace(
+                    returncode=0, stdout=f"{manager.JOBCTL_VERSION}\n", stderr=""
+                )
+            return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+        with patch("cluster_kit.jobs.manager.run_remote", fake_run_remote):
+            list_jobs(config=_config())
+            list_jobs(config=_config())
+
+        manager._jobctl_verified.clear()
+        probes = [c for c in remote_calls if "--version" in c]
+        assert len(probes) == 1
+
+
+# ---------------------------------------------------------------------------
 # jobctl portability
 # ---------------------------------------------------------------------------
 

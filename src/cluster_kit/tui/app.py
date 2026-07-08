@@ -36,6 +36,7 @@ from textual.widgets import (  # type: ignore[reportMissingImports]
 )
 
 from cluster_kit.config import get_cluster_user
+from cluster_kit.sync.mirror import read_mirror_state
 from cluster_kit.tui.backend.available_resources import (
     AvailableResourceRow,
     fetch_available_resources,
@@ -50,6 +51,7 @@ from cluster_kit.tui.backend.log_discovery import (
     discover_log_files,
     parse_log_files,
 )
+from cluster_kit.tui.backend.pc_jobs import PcJobsResult, fetch_pc_jobs
 from cluster_kit.tui.backend.queue_parser import (
     JobInfo,
     fetch_queue,
@@ -71,12 +73,14 @@ from cluster_kit.tui.widgets.available_resources_table import (
     AvailableResourcesTable,
 )
 from cluster_kit.tui.widgets.log_viewer import LogViewer
+from cluster_kit.tui.widgets.pc_jobs_table import PcJobsTable
 from cluster_kit.tui.widgets.queue_table import (
     JobSelected,
     QueueTable,
 )
 from cluster_kit.tui.widgets.status_bar import (
     ConnectionStatus,
+    MirrorStatus,
 )
 
 
@@ -87,6 +91,7 @@ class ClusterTUI(App[None]):
         Binding("1", "show_tab('queue')", "Queue"),
         Binding("2", "show_tab('available')", "Available"),
         Binding("3", "show_tab('logs')", "Logs"),
+        Binding("4", "show_tab('pc')", "PC"),
         Binding("r", "refresh", "Refresh"),
         Binding("c", "cancel_job", "Cancel"),
         Binding("l", "view_logs", "Logs"),
@@ -128,16 +133,31 @@ class ClusterTUI(App[None]):
             with TabPane("Queue", id="queue"):
                 yield QueueTable()
                 yield ConnectionStatus()
+                yield MirrorStatus()
             with TabPane("Available", id="available"):
                 yield AvailableResourcesTable()
             with TabPane("Logs", id="logs"):
                 yield LogViewer()
+            with TabPane("PC", id="pc"):
+                yield PcJobsTable()
         yield Footer()
 
     def on_mount(self) -> None:
         self._test_connection_on_mount()
         self.set_interval(self.refresh_interval, self.action_refresh)
         self.action_refresh()
+        # PC jobs are long-lived; poll at 3x the squeue interval.
+        self.set_interval(self.refresh_interval * 3, self._refresh_pc_jobs)
+        self._refresh_pc_jobs()
+
+    @work(thread=True, exclusive=True, group="pc_jobs")
+    def _refresh_pc_jobs(self) -> None:  # type: ignore[return]
+        result = fetch_pc_jobs()
+        self.call_from_thread(self._update_pc_jobs, result)
+
+    def _update_pc_jobs(self, result: PcJobsResult) -> None:
+        self.query_one(PcJobsTable).refresh_data(result.jobs, result.error)
+        self.query_one(MirrorStatus).update_from_state(read_mirror_state())
 
     @work(thread=True)
     def _test_connection_on_mount(self) -> None:  # type: ignore[return]

@@ -80,6 +80,23 @@ ConnectionStatus .error {
     color: $error;
 }
 
+MirrorStatus {
+    height: 1;
+    padding: 0 1;
+}
+
+MirrorStatus.connected {
+    color: $success;
+}
+
+MirrorStatus.stale {
+    color: $warning;
+}
+
+MirrorStatus.error {
+    color: $error;
+}
+
 /* ========================================================================
    Queue DataTable
    ======================================================================== */
@@ -193,8 +210,8 @@ Screen {
 /* ---- Top segmented control (view tabs) --------------------------------- */
 #phone-nav-row {
     layout: grid;
-    grid-size: 3 1;
-    grid-columns: 1fr 1fr 1fr;
+    grid-size: 4 1;
+    grid-columns: 1fr 1fr 1fr 1fr;
     grid-rows: 3;
     grid-gutter: 1;
     width: 100%;
@@ -254,6 +271,25 @@ ConnectionStatus.stale {
 }
 
 ConnectionStatus.error {
+    color: $error;
+}
+
+#phone-mirror-status {
+    height: 1;
+    padding: 0 1;
+    content-align: left middle;
+    color: $text-muted;
+}
+
+MirrorStatus.connected {
+    color: $success;
+}
+
+MirrorStatus.stale {
+    color: $warning;
+}
+
+MirrorStatus.error {
     color: $error;
 }
 
