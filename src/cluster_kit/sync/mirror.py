@@ -45,7 +45,7 @@ import yaml
 from rich.console import Console
 
 from cluster_kit.config import load_config
-from cluster_kit.jobs.manager import JobError, job_status, read_log, submit
+from cluster_kit.jobs.manager import JobError, job_status, list_jobs, read_log, submit
 from cluster_kit.utils.ssh import RemoteUnreachableError, ensure_reachable, run_remote
 
 console = Console()
@@ -114,6 +114,24 @@ def _rsync_cmd(src: str, dst: str, excludes: list[str], dry_run: bool) -> str:
     return " ".join(parts)
 
 
+def _find_running_job(name: str, pc_config) -> Optional[str]:
+    """Return the job_id of an already-RUNNING mirror job for *name*, if any.
+
+    Without this, an hourly-scheduled mirror would submit a brand-new
+    redundant transfer every tick while a prior multi-hour first-sync is
+    still in flight, stacking up concurrent rsyncs against the same dirs.
+    """
+    try:
+        jobs = list_jobs(config=pc_config)
+    except JobError:
+        return None
+    target = f"mirror-{name}"
+    for job in jobs:
+        if job.get("name") == target and job.get("state") == "RUNNING":
+            return job.get("job_id")
+    return None
+
+
 def _dry_run_dataset(
     name: str, pc_dir: str, cluster_dir: str, excludes: list[str], *, pc_config
 ) -> bool:
@@ -162,17 +180,21 @@ def mirror_dataset(
             name, pc_dir, cluster_dir, excludes, pc_config=pc_config
         )
 
-    pass1 = _rsync_cmd(f"{cluster_dir}/", f"{pc_dir}/", excludes, dry_run=False)
-    pass2 = _rsync_cmd(f"{pc_dir}/", f"{cluster_dir}/", excludes, dry_run=False)
-    command = f"mkdir -p {shlex.quote(pc_dir)} && {pass1} && {pass2}"
-
-    handle = submit(command, name=f"mirror-{name}", config=pc_config)
-    console.print(f"[dim]{name}: submitted as PC job {handle.job_id}[/dim]")
+    job_id = _find_running_job(name, pc_config)
+    if job_id is not None:
+        console.print(f"[dim]{name}: reusing in-flight PC job {job_id}[/dim]")
+    else:
+        pass1 = _rsync_cmd(f"{cluster_dir}/", f"{pc_dir}/", excludes, dry_run=False)
+        pass2 = _rsync_cmd(f"{pc_dir}/", f"{cluster_dir}/", excludes, dry_run=False)
+        command = f"mkdir -p {shlex.quote(pc_dir)} && {pass1} && {pass2}"
+        handle = submit(command, name=f"mirror-{name}", config=pc_config)
+        job_id = handle.job_id
+        console.print(f"[dim]{name}: submitted as PC job {job_id}[/dim]")
 
     deadline = time.monotonic() + _MAX_WAIT
     while time.monotonic() < deadline:
         try:
-            status = job_status(handle.job_id, config=pc_config)
+            status = job_status(job_id, config=pc_config)
         except JobError as exc:
             if verbose:
                 console.print(f"[dim]{name}: poll failed, retrying: {exc}[/dim]")
@@ -184,25 +206,29 @@ def mirror_dataset(
             time.sleep(_POLL_INTERVAL)
             continue
         if state == "COMPLETED":
-            console.print(f"[green]✓ {name} mirrored ({handle.job_id})[/green]")
+            console.print(f"[green]✓ {name} mirrored ({job_id})[/green]")
             _write_state(name, True, "")
             return True
 
-        detail = f"job {handle.job_id} ended {state}"
+        detail = f"job {job_id} ended {state}"
         try:
-            detail += f":\n{read_log(handle.job_id, lines=20, config=pc_config)}"
+            detail += f":\n{read_log(job_id, lines=20, config=pc_config)}"
         except JobError:
             pass
         console.print(f"[red]✗ {name}: {detail}[/red]")
         _write_state(name, False, detail)
         return False
 
+    # We genuinely don't know the outcome here (every poll failed to reach
+    # a terminal state before the deadline, e.g. the Mac was asleep/offline
+    # for hours) — the job itself may already have completed successfully
+    # on the PC. Don't overwrite prior state with a false failure; leave it
+    # for the next run (or a manual `job status`) to resolve.
     detail = (
-        f"gave up polling job {handle.job_id} after {_MAX_WAIT}s; "
-        "it may still be running"
+        f"gave up polling job {job_id} after {_MAX_WAIT}s without reaching a "
+        f"terminal state; check `cluster-kit -p pc job status {job_id}`"
     )
     console.print(f"[yellow]⚠ {name}: {detail}[/yellow]")
-    _write_state(name, False, detail)
     return False
 
 

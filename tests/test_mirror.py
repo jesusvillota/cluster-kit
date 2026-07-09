@@ -159,6 +159,7 @@ class TestRealMirrorDataset:
             return next(status_iter)
 
         with (
+            patch.object(mirror, "list_jobs", return_value=[]),
             patch.object(mirror, "submit", fake_submit),
             patch.object(mirror, "job_status", fake_job_status),
             patch.object(mirror, "read_log", return_value="tail of log"),
@@ -225,6 +226,7 @@ class TestRealMirrorDataset:
 
         handle = JobHandle(job_id="x", job_dir="/d", log_path="/d/log", command="cmd")
         with (
+            patch.object(mirror, "list_jobs", return_value=[]),
             patch.object(mirror, "submit", return_value=handle),
             patch.object(mirror, "job_status", fake_job_status),
             patch.object(mirror, "time") as mock_time,
@@ -239,6 +241,63 @@ class TestRealMirrorDataset:
             )
         assert ok is True
         assert calls["n"] == 2
+
+    def test_reuses_already_running_job_instead_of_resubmitting(self):
+        running_jobs = [
+            {"job_id": "mirror-whale_outputs_earlier", "name": "mirror-whale_outputs",
+             "state": "RUNNING"},
+            {"job_id": "unrelated_job", "name": "unrelated", "state": "RUNNING"},
+        ]
+        with (
+            patch.object(mirror, "list_jobs", return_value=running_jobs),
+            patch.object(mirror, "submit") as fake_submit,
+            patch.object(
+                mirror, "job_status", return_value={"state": "COMPLETED", "rc": "0"}
+            ) as fake_status,
+            patch.object(mirror, "time") as mock_time,
+        ):
+            mock_time.monotonic.side_effect = range(0, 10_000, 1)
+            mock_time.sleep = lambda *_: None
+            ok = mirror_dataset(
+                "whale_outputs",
+                self.SPEC,
+                cluster_from_pc="u@cluster",
+                pc_config=None,
+            )
+        assert ok is True
+        fake_submit.assert_not_called()
+        assert fake_status.call_args.args[0] == "mirror-whale_outputs_earlier"
+
+    def test_timeout_does_not_overwrite_state_with_false_failure(
+        self, state_path: Path
+    ):
+        from cluster_kit.jobs.manager import JobHandle
+
+        handle = JobHandle(job_id="x", job_dir="/d", log_path="/d/log", command="cmd")
+        mirror._write_state("whale_outputs", True, "")
+        prior_state = read_mirror_state()
+
+        with (
+            patch.object(mirror, "list_jobs", return_value=[]),
+            patch.object(mirror, "submit", return_value=handle),
+            patch.object(mirror, "job_status", return_value={"state": "RUNNING"}),
+            patch.object(mirror, "time") as mock_time,
+        ):
+            # First monotonic() call sets the deadline; make the very next
+            # one already exceed it so the loop gives up immediately.
+            mock_time.monotonic.side_effect = [0, 999_999]
+            mock_time.sleep = lambda *_: None
+            ok = mirror_dataset(
+                "whale_outputs",
+                self.SPEC,
+                cluster_from_pc="u@cluster",
+                pc_config=None,
+            )
+        assert ok is False
+        # State from before the timeout must survive untouched — we
+        # genuinely don't know the job's outcome, so we must not record a
+        # false failure over a possibly-still-successful prior state.
+        assert read_mirror_state() == prior_state
 
 
 class TestRunMirror:
