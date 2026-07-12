@@ -23,8 +23,8 @@ MANIFEST = """
 cluster_from_pc: j-vill36@192.168.1.61
 datasets:
   whale_outputs:
-    cluster: /mnt/beegfs/scripts_whales/output/processed
-    pc: /home/user/GitHub/whales/output/processed
+    cluster: /mnt/beegfs/scripts_whales/output
+    pc: /home/user/GitHub/whales/output
     exclude: ["*.tmp"]
 """
 
@@ -317,6 +317,18 @@ class TestRunMirror:
             assert run_mirror(manifest_path) is True
         assert mocked.call_count == 1
         assert mocked.call_args.args[0] == "whale_outputs"
+
+    def test_prunes_state_for_removed_datasets(
+        self, manifest_path: Path, state_path: Path
+    ):
+        mirror._write_state("whale_visualizations", True, "")
+        with (
+            patch.object(mirror, "load_config"),
+            patch.object(mirror, "ensure_reachable"),
+            patch.object(mirror, "mirror_dataset", return_value=True),
+        ):
+            assert run_mirror(manifest_path) is True
+        assert "whale_visualizations" not in read_mirror_state()
 
 
 class TestState:

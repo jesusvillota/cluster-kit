@@ -37,8 +37,8 @@ that repo root:
 cluster_from_pc: j-vill36@192.168.1.61   # how the PC addresses the cluster
 datasets:
   whale_outputs:
-    cluster: /mnt/slurm-beegfs/Users/j-vill36/scripts_whales/output/processed
-    pc: /home/j-vill36/GitHub/whales/output/processed
+    cluster: /mnt/slurm-beegfs/Users/j-vill36/scripts_whales/output
+    pc: /home/j-vill36/GitHub/whales/output
     exclude: []                          # optional rsync --exclude patterns
 ```
 

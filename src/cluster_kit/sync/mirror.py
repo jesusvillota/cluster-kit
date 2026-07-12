@@ -23,8 +23,8 @@ Datasets come from a manifest in the consuming repo:
     cluster_from_pc: j-vill36@192.168.1.61   # how the PC addresses the cluster
     datasets:
       whale_outputs:
-        cluster: /mnt/slurm-beegfs/Users/j-vill36/scripts_whales/output/processed
-        pc: /home/j-vill36/GitHub/whales/output/processed
+        cluster: /mnt/slurm-beegfs/Users/j-vill36/scripts_whales/output
+        pc: /home/j-vill36/GitHub/whales/output
         exclude: []                          # optional rsync --exclude patterns
 
 CLI:
@@ -90,6 +90,18 @@ def read_mirror_state() -> dict:
         return json.loads(MIRROR_STATE_PATH.read_text())
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def _prune_state(dataset_names: set[str]) -> None:
+    """Drop state for datasets removed from the active manifest."""
+    state = read_mirror_state()
+    stale = set(state) - dataset_names
+    if not stale:
+        return
+    for name in stale:
+        del state[name]
+    MIRROR_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MIRROR_STATE_PATH.write_text(json.dumps(state, indent=2))
 
 
 def _write_state(name: str, ok: bool, detail: str) -> None:
@@ -242,6 +254,7 @@ def run_mirror(
     """Mirror all datasets in the manifest (or just *dataset*)."""
     manifest = load_manifest(manifest_path)
     datasets = manifest["datasets"]
+    _prune_state(set(datasets))
     if dataset is not None:
         if dataset not in datasets:
             raise MirrorError(
