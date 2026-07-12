@@ -68,7 +68,7 @@ all pass.
 - [x] Zero availability for down, unavailable, and unknown nodes.
 - [x] Update resource-selection guidance in OpenCode and Claude.
 - [x] Verify focused lint, tests, and the live resource probe.
-- [ ] Commit, push, and upgrade the whales dependency.
+- [x] Commit, push, and upgrade the whales dependency.
 
 ## Review
 
