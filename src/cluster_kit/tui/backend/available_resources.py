@@ -11,8 +11,9 @@ from dataclasses import dataclass
 from .ssh import run_ssh_command
 
 FIELD_DELIMITER = "|"
-EXPECTED_FIELD_COUNT = 4
+EXPECTED_FIELD_COUNT = 5
 TARGET_NODE_NAMES = ("HPCOM-01", "HPCOM-02", "HPCOM-04", "HPCOM-05")
+SCHEDULABLE_NODE_STATES = {"idle", "mixed"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +38,7 @@ class AvailableResourceRow:
     """Availability summary for one fixed cluster node."""
 
     node_name: str
+    node_state: str
     total_cpus: int
     total_memory_gb: int
     total_gpus: int
@@ -52,7 +54,13 @@ def _is_header_row(values: list[str]) -> bool:
     """Return True when the parsed row is the delimiter-formatted header."""
 
     normalized = [value.strip().upper().replace("-", "") for value in values]
-    return normalized == ["NODEHOST", "CPUSSTATE", "ALLOCMEM", "GRESUSED"]
+    return normalized == [
+        "NODEHOST",
+        "STATECOMPLETE",
+        "CPUSSTATE",
+        "ALLOCMEM",
+        "GRESUSED",
+    ]
 
 
 def _clean_delimited_row(line: str) -> list[str]:
@@ -116,54 +124,72 @@ def _clamp_available(total: int, allocated: int) -> int:
     return max(total - allocated, 0)
 
 
+def _is_schedulable_state(node_state: str) -> bool:
+    """Return whether Slurm can place new work on this node state."""
+
+    return node_state.strip().lower() in SCHEDULABLE_NODE_STATES
+
+
 def _default_row(node_name: str) -> AvailableResourceRow:
-    """Build a safe fallback row using fixed totals and zero allocations."""
+    """Build a conservative row when the node has no live state."""
 
     totals = FIXED_NODE_TOTALS[node_name]
     return AvailableResourceRow(
         node_name=node_name,
+        node_state="unknown",
         total_cpus=totals.cpus,
         total_memory_gb=totals.memory_gb,
         total_gpus=totals.gpus,
         allocated_cpus=0,
         allocated_memory_gb=0,
         allocated_gpus=0,
-        available_cpus=totals.cpus,
-        available_memory_gb=totals.memory_gb,
-        available_gpus=totals.gpus,
+        available_cpus=0,
+        available_memory_gb=0,
+        available_gpus=0,
     )
 
 
 def _failure_row(node_name: str) -> AvailableResourceRow:
-    """Build a failure fallback row using fixed totals and zero allocations."""
+    """Build a conservative row when the resource probe fails."""
 
     return _default_row(node_name)
 
 
 def _row_from_live_values(
     node_name: str,
+    node_state: str,
     cpus_state: str,
     alloc_mem_mb: str,
     gres_used: str,
 ) -> AvailableResourceRow:
-    """Combine fixed node totals with live allocation values."""
+    """Combine fixed node totals with live state and allocation values."""
 
     totals = FIXED_NODE_TOTALS[node_name]
     allocated_cpus = _parse_allocated_cpus(cpus_state)
     allocated_memory_gb = _parse_allocated_memory_gb(alloc_mem_mb)
     allocated_gpus = _parse_allocated_gpus(gres_used)
+    is_schedulable = _is_schedulable_state(node_state)
 
     return AvailableResourceRow(
         node_name=node_name,
+        node_state=node_state,
         total_cpus=totals.cpus,
         total_memory_gb=totals.memory_gb,
         total_gpus=totals.gpus,
         allocated_cpus=allocated_cpus,
         allocated_memory_gb=allocated_memory_gb,
         allocated_gpus=allocated_gpus,
-        available_cpus=_clamp_available(totals.cpus, allocated_cpus),
-        available_memory_gb=_clamp_available(totals.memory_gb, allocated_memory_gb),
-        available_gpus=_clamp_available(totals.gpus, allocated_gpus),
+        available_cpus=(
+            _clamp_available(totals.cpus, allocated_cpus) if is_schedulable else 0
+        ),
+        available_memory_gb=(
+            _clamp_available(totals.memory_gb, allocated_memory_gb)
+            if is_schedulable
+            else 0
+        ),
+        available_gpus=(
+            _clamp_available(totals.gpus, allocated_gpus) if is_schedulable else 0
+        ),
     )
 
 
@@ -188,9 +214,10 @@ def parse_sinfo_output(raw: str) -> list[AvailableResourceRow]:
 
         rows_by_node[node_name] = _row_from_live_values(
             node_name=node_name,
-            cpus_state=row[1],
-            alloc_mem_mb=row[2],
-            gres_used=row[3],
+            node_state=row[1],
+            cpus_state=row[2],
+            alloc_mem_mb=row[3],
+            gres_used=row[4],
         )
 
     return [rows_by_node[node_name] for node_name in TARGET_NODE_NAMES]
@@ -206,7 +233,7 @@ def fetch_available_resources() -> list[AvailableResourceRow]:
         "--exact",
         "--noheader",
         f"--nodes={node_list}",
-        f"--Format=NodeHost:{FIELD_DELIMITER},CPUsState:{FIELD_DELIMITER},AllocMem:{FIELD_DELIMITER},GresUsed",
+        f"--Format=NodeHost:{FIELD_DELIMITER},StateComplete:{FIELD_DELIMITER},CPUsState:{FIELD_DELIMITER},AllocMem:{FIELD_DELIMITER},GresUsed",
     ]
     result = run_ssh_command(shlex.join(command))
     if not result.success:

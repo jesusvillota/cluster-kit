@@ -556,11 +556,12 @@ def _cmd_resources(args: argparse.Namespace) -> None:
     console = Console()
 
     node_table = Table(title="Node availability (free = total - allocated)")
-    for column in ("Node", "CPUs free", "Mem free (GB)", "GPUs free"):
+    for column in ("Node", "State", "CPUs free", "Mem free (GB)", "GPUs free"):
         node_table.add_column(column)
     for node in nodes:
         node_table.add_row(
             node.node_name,
+            node.node_state,
             f"{node.available_cpus}/{node.total_cpus}",
             f"{node.available_memory_gb}/{node.total_memory_gb}",
             f"{node.available_gpus}/{node.total_gpus}",

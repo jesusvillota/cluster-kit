@@ -61,3 +61,21 @@ Verification: `uv run pytest tests/test_tui_log_scroll.py`,
 `uv run pytest tests/test_tui_entrypoints.py tests/test_tui_queue_selection.py`,
 and `uv run ruff check src/cluster_kit/tui/app_phone.py src/cluster_kit/tui/widgets/log_viewer.py src/cluster_kit/tui/styles.py tests/test_tui_log_scroll.py`
 all pass.
+
+# State-Aware Resource Availability
+
+- [x] Query and expose each node's live Slurm state.
+- [x] Zero availability for down, unavailable, and unknown nodes.
+- [x] Update resource-selection guidance in OpenCode and Claude.
+- [x] Verify focused lint, tests, and the live resource probe.
+- [ ] Commit, push, and upgrade the whales dependency.
+
+## Review
+
+`StateComplete` is now included in each resource row. Only `idle` and `mixed`
+nodes report usable capacity; all other states, including `down*` and
+`down+not_responding`, report zero availability. Focused lint and resource
+tests pass, and the live probe reports HPCOM-05 as `down+not_responding` with
+zero available CPUs, memory, and GPUs. The full suite has three pre-existing
+configuration failures; full lint has one pre-existing line-length violation
+in `src/cluster_kit/tui/phone_access.py`.

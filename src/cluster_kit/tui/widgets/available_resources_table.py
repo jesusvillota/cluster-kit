@@ -16,6 +16,7 @@ from ..backend.available_resources import AvailableResourceRow
 
 COLUMNS = (
     "NODE",
+    "STATE",
     "AVAIL_CPUS",
     "AVAIL_RAM",
     "AVAIL_GPUS",
@@ -87,6 +88,7 @@ class AvailableResourcesTable(Widget):
         for row in rows:
             table.add_row(
                 row.node_name,
+                row.node_state,
                 Text(str(row.available_cpus), style=_AVAILABLE_STYLE),
                 Text(f"{row.available_memory_gb} GB", style=_AVAILABLE_STYLE),
                 Text(str(row.available_gpus), style=_AVAILABLE_STYLE),
@@ -108,7 +110,8 @@ class AvailableResourcesTable(Widget):
     @staticmethod
     def _make_summary(row: AvailableResourceRow) -> _PhoneResourceSummary:
         capacity_line = (
-            f"{row.total_cpus} CPU • {row.total_memory_gb} GB • {row.total_gpus} GPU"
+            f"{row.node_state} • {row.total_cpus} CPU • {row.total_memory_gb} GB • "
+            f"{row.total_gpus} GPU"
         )
         allocation_line = (
             f"[red]Used:[/red] {row.allocated_cpus} CPU • "
