@@ -226,6 +226,13 @@ class CodeDeployer:
         )
         step += 1
 
+        table.add_row(
+            str(step),
+            "Provision cluster_kit",
+            "Mirror local package into remote .venv (skip if no venv)",
+        )
+        step += 1
+
         table.add_row(str(step), "Verify Deployment", "List remote directories")
 
         console.print(table)
@@ -327,13 +334,90 @@ class CodeDeployer:
         console.print("\n[green][OK][/green] All directories synced\n")
         return True
 
+    def provision_remote_cluster_kit(self) -> bool:
+        """Mirror the locally-installed cluster_kit package into the remote uv venv.
+
+        The cluster has no git, so ``uv sync`` cannot resolve the git-based
+        cluster-kit dependency there and remote venvs are built with
+        ``--no-install-package cluster-kit``. Project code imports cluster_kit
+        at runtime (email notifications), so every deploy copies the local
+        installed package — version-matched to the consuming repo's uv.lock —
+        straight into the remote venv's site-packages. Projects without a
+        remote ``.venv`` (conda-flow, e.g. whales) are skipped.
+
+        Returns:
+            bool: True if provisioning succeeded or was skipped, False on error
+        """
+        show_step_header(5, 6, "Provisioning cluster-kit in Remote venv")
+
+        remote_base_str = str(self._remote_base)
+        probe = (
+            f"ls -d {remote_base_str}/.venv/lib/python*/site-packages "
+            "2>/dev/null | head -1"
+        )
+        try:
+            result = subprocess.run(
+                ["ssh", self._ssh_host, probe],
+                capture_output=True,
+                text=True,
+            )
+        except Exception as e:
+            show_error_panel("Error probing remote venv", str(e))
+            return False
+
+        remote_site = result.stdout.strip()
+        if result.returncode != 0 or not remote_site:
+            console.print(
+                "[dim]No remote .venv found - skipping (conda-flow project)[/dim]\n"
+            )
+            return True
+
+        import cluster_kit as _cluster_kit_pkg
+
+        pkg_dir = Path(_cluster_kit_pkg.__file__).resolve().parent
+
+        # Drop any stale copy (package dir and wheel/pip dist-info of any
+        # version) so remote metadata never lies about what is installed.
+        cleanup = (
+            f"rm -rf {remote_site}/cluster_kit "
+            f"{remote_site}/cluster_kit-*.dist-info"
+        )
+        result = subprocess.run(
+            ["ssh", self._ssh_host, cleanup], capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            show_error_panel("Failed to clean stale remote cluster_kit", result.stderr)
+            return False
+
+        is_windows = sys.platform == "win32"
+        runner = (
+            ScpRunner(verbose=self.verbose)
+            if is_windows
+            else RsyncRunner(dry_run=False, verbose=self.verbose, delete=True)
+        )
+        # No trailing slash on source: both rsync and scp then create the
+        # cluster_kit/ leaf under site-packages.
+        success = runner.sync(
+            str(pkg_dir),
+            f"{self._ssh_host}:{remote_site}/",
+            show_progress=self.verbose,
+        )
+        if not success:
+            show_error_panel("Failed to sync cluster_kit into remote venv", None)
+            return False
+
+        console.print(
+            f"[green][OK][/green] cluster_kit mirrored into {remote_site}\n"
+        )
+        return True
+
     def verify_deployment(self) -> bool:
         """Verify deployment by listing remote directories.
 
         Returns:
             bool: True if verification successful, False otherwise
         """
-        show_step_header(5, 6, "Verifying Deployment")
+        show_step_header(6, 6, "Verifying Deployment")
 
         remote_base_str = str(self._remote_base)
 
@@ -399,7 +483,12 @@ class CodeDeployer:
         if not self.sync_directories():
             return False
 
-        # Step 6: Verify deployment
+        # Step 6: Mirror cluster_kit into the remote uv venv (skipped for
+        # conda-flow projects) — the cluster has no git to resolve the dep.
+        if not self.provision_remote_cluster_kit():
+            return False
+
+        # Step 7: Verify deployment
         if not self.verify_deployment():
             return False
 
