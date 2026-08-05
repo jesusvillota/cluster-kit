@@ -27,7 +27,11 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from cluster_kit.config import get_cluster_host, get_remote_base
+from cluster_kit.config import (
+    get_canonical_remote_base,
+    get_cluster_host,
+    get_remote_base,
+)
 from cluster_kit.utils import (
     ClusterConnection,
     PythonCacheCleaner,
@@ -152,6 +156,13 @@ class CodeDeployer:
             "Clean local cache": "[OK] Always enabled",
         }
 
+        canonical = str(get_canonical_remote_base())
+        if str(self._remote_base) != canonical:
+            config["Worktree isolation"] = (
+                f"[green]active[/green] — owns "
+                f"{', '.join(self.directories)}, shares the rest of {canonical}"
+            )
+
         if self.dry_run:
             config["Mode"] = "[yellow]DRY RUN - No changes will be made[/yellow]"
 
@@ -212,6 +223,14 @@ class CodeDeployer:
         )
         step += 1
 
+        if str(self._remote_base) != str(get_canonical_remote_base()):
+            table.add_row(
+                str(step),
+                "Provision Remote Base",
+                f"mkdir {self._remote_base} + symlink shared state",
+            )
+            step += 1
+
         table.add_row(
             str(step),
             "Remove Remote Dirs",
@@ -252,6 +271,70 @@ class CodeDeployer:
         dirs_to_clean = [self._local_base / d for d in self.directories]
         stats = PythonCacheCleaner.clean_local(dirs_to_clean, verbose=True)
         return stats["pycache_dirs"] + stats["pyc_files"] + stats["pyo_files"]
+
+    # A worktree deployment owns only what it syncs; everything else at the
+    # canonical remote root is symlinked back — conda envs are expensive to
+    # rebuild, output must stay in one place for the data mirror, and
+    # machine-local files (.env, THIS_IS.py, data/) are provisioned by hand and
+    # never synced.  Logs and run state stay per-worktree so it is obvious
+    # whose job is whose.
+    UNSHARED = ("_logs_", ".cluster_kit", ".git")
+
+    def provision_remote_base(self) -> bool:
+        """Create the worktree deployment directory and its shared symlinks.
+
+        Symlinks every entry of the canonical remote base into the worktree
+        base, except the directories this deployer syncs and :attr:`UNSHARED`.
+        No-op unless the remote base carries a worktree suffix (see
+        :func:`cluster_kit.config._worktree_name`).  Idempotent: existing paths
+        are left untouched.
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        canonical = str(get_canonical_remote_base())
+        remote_base_str = str(self._remote_base)
+        if remote_base_str == canonical:
+            return True
+
+        console.print(
+            f"[cyan]Worktree deployment[/cyan] {remote_base_str}\n"
+            f"[dim]owns {', '.join(self.directories)}; "
+            f"shares everything else with {canonical}[/dim]"
+        )
+
+        skip = "|".join((*self.directories, *self.UNSHARED))
+        # `* .[!.]*` covers dotfiles; unmatched globs stay literal, so the
+        # -e guard on the source is what filters them out.
+        script = (
+            f'mkdir -p "{remote_base_str}" && cd "{canonical}" && '
+            f'for l in * .[!.]*; do '
+            f'case "$l" in {skip}) continue;; esac; '
+            f'[ -e "{canonical}/$l" ] || continue; '
+            f'[ -e "{remote_base_str}/$l" ] || '
+            f'ln -s "{canonical}/$l" "{remote_base_str}/$l"; '
+            f"done"
+        )
+
+        try:
+            result = subprocess.run(
+                ["ssh", self._ssh_host, script],
+                capture_output=True,
+                text=True,
+            )
+        except Exception as e:
+            show_error_panel("Error provisioning worktree remote base", str(e))
+            return False
+
+        if result.returncode != 0:
+            show_error_panel(
+                f"Failed to provision worktree remote base: {remote_base_str}",
+                result.stderr,
+            )
+            return False
+
+        console.print("[green][OK][/green] Worktree remote base ready\n")
+        return True
 
     def remove_remote_directories(self) -> bool:
         """Remove old directories from cluster.
@@ -474,7 +557,12 @@ class CodeDeployer:
         # Step 3: Clean local cache (always done)
         self.clean_local_cache_step()
 
-        # Step 4: Remove remote directories (cache files are deleted along
+        # Step 4: Create the worktree remote base + shared symlinks (no-op
+        # outside a linked worktree)
+        if not self.provision_remote_base():
+            return False
+
+        # Step 5: Remove remote directories (cache files are deleted along
         # with everything else, so a separate remote cache clean is unnecessary)
         if not self.remove_remote_directories():
             return False

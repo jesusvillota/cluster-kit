@@ -334,12 +334,41 @@ All variables are loaded from `.env` (via `python-dotenv`) or set directly in yo
 |---|---|---|---|
 | `CLUSTER_HOST` | `cluster` | No | SSH alias or hostname for the cluster |
 | `CLUSTER_USER` | `os.getenv('USER')` | No | Username on the remote cluster |
-| `CLUSTER_REMOTE_BASE` | *(none)* | **Yes** | Absolute path to project root on cluster |
+| `CLUSTER_REMOTE_BASE` | *(none)* | **Yes** | Absolute path to project root on cluster (see [Worktree isolation](#worktree-isolation)) |
 | `CLUSTER_SSH_KEY` | `~/.ssh/id_ed25519_cluster` | No | Path to SSH private key |
 | `CLUSTER_SSH_TIMEOUT` | `30` | No | SSH connection timeout (1-300 seconds) |
 | `CLUSTER_SYNC_EXCLUDE` | `__pycache__,*.pyc,*.pyo` | No | Comma-separated rsync exclude patterns |
 | `CLUSTER_EXECUTOR` | `slurm` | No | Job backend: `slurm` (sbatch) or `ssh` (detached processes on a plain machine) |
 | `CLUSTER_SYNC_MODE` | `rsync` | No | Code sync: `rsync` (push working tree) or `git` (remote clone pulls from GitHub) |
+
+### Worktree Isolation
+
+`sync code` is destructive — it removes `src/` and `runnables/` on the cluster before
+rsyncing with `--delete`. With several agent sessions working in parallel git worktrees of
+the same repo, a sync from one worktree would delete the code another worktree's queued
+jobs are about to run.
+
+So when the current directory sits inside a **linked git worktree**, the worktree name is
+appended to `CLUSTER_REMOTE_BASE`:
+
+```
+~/GitHub/whales                        → /mnt/.../scripts_whales
+~/worktrees/whales/price-pressure      → /mnt/.../scripts_whales__price-pressure
+```
+
+Nothing to configure — detection is the `.git` file-vs-directory distinction that git
+itself uses. The main checkout is unaffected, and `CLUSTER_SYNC_MODE=git` is exempt (it
+targets a single remote checkout at a fixed path).
+
+The worktree deployment **owns only what it syncs** (`src/`, `runnables/`, plus its own
+`_logs_/` and `.cluster_kit/`). Everything else at the canonical remote root — conda envs,
+`output/`, `data/`, and machine-local files like `.env` — is symlinked back on first sync,
+so nothing is rebuilt or re-mirrored and results still accumulate in one place.
+
+`PROJECT_DIR` is exported into every job, so worker scripts should resolve their base
+directory from it (`BASE_DIR="${PROJECT_DIR:-<fallback>}"`) rather than hardcoding a path.
+
+Use `get_canonical_remote_base()` when you need the shared path regardless of worktree.
 
 ### Multi-Cluster Profiles
 

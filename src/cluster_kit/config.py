@@ -35,6 +35,7 @@ __all__ = [
     "get_cluster_host",
     "get_cluster_user",
     "get_remote_base",
+    "get_canonical_remote_base",
     "get_ssh_key",
     "get_ssh_timeout",
     "get_sync_exclude",
@@ -95,6 +96,11 @@ class ClusterConfig:
         host: SSH alias or hostname for the cluster.
         user: Username on the remote cluster.
         remote_base: Absolute POSIX path to the project root on the cluster.
+            Suffixed with ``__<worktree>`` when running from a linked git
+            worktree — see :func:`_worktree_name`.
+        canonical_remote_base: ``remote_base`` without the worktree suffix, i.e.
+            the shared deployment directory.  Equal to ``remote_base`` outside a
+            linked worktree.
         ssh_key: Path to the SSH private key file.
         ssh_timeout: SSH connection timeout in seconds (1-300).
         sync_exclude: Comma-separated rsync exclude patterns.
@@ -114,6 +120,16 @@ class ClusterConfig:
     slurm_partition: str = _DEFAULT_SLURM_PARTITION
     executor: str = _DEFAULT_EXECUTOR
     sync_mode: str = _DEFAULT_SYNC_MODE
+    canonical_remote_base: Optional[PurePosixPath] = None
+
+    def __post_init__(self) -> None:
+        if self.canonical_remote_base is None:
+            object.__setattr__(self, "canonical_remote_base", self.remote_base)
+
+    @property
+    def is_worktree_isolated(self) -> bool:
+        """True when ``remote_base`` carries a worktree suffix."""
+        return self.remote_base != self.canonical_remote_base
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +155,30 @@ def _get_env_var(name: str, env_profile: Optional[str] = None) -> Optional[str]:
         if prefixed is not None:
             return prefixed
     return os.getenv(f"CLUSTER_{name}")
+
+
+def _worktree_name(start: Optional[Path] = None) -> Optional[str]:
+    """Return the directory name if *start* sits inside a linked git worktree.
+
+    Git writes a ``.git`` *directory* in the main checkout and a ``.git`` *file*
+    (a gitdir pointer) in every linked worktree, so the file/dir distinction is
+    enough — no subprocess needed.
+
+    Args:
+        start: Directory to search upward from.  Defaults to the cwd.
+
+    Returns:
+        The worktree directory name, or ``None`` in a main checkout or outside
+        any repository.
+    """
+    base = (start or Path.cwd()).resolve()
+    for path in (base, *base.parents):
+        dot_git = path / ".git"
+        if dot_git.is_file():
+            return path.name
+        if dot_git.is_dir():
+            return None
+    return None
 
 
 def load_config(
@@ -196,6 +236,16 @@ def load_config(
             "Set it to the absolute path of the project root on the cluster."
         )
 
+    # Isolate concurrent git worktrees: each gets its own remote deployment
+    # directory, so the destructive `sync code` (rm -rf + rsync --delete) run
+    # from one worktree cannot clobber the code another worktree's queued jobs
+    # are about to run.  Skipped in git sync mode, which targets a single
+    # remote checkout that must keep its configured path.
+    canonical_remote_base = PurePosixPath(remote_base_raw)
+    worktree = _worktree_name() if sync_mode != "git" else None
+    if worktree:
+        remote_base_raw = f"{remote_base_raw.rstrip('/')}__{worktree}"
+
     ssh_timeout = _DEFAULT_SSH_TIMEOUT
     if ssh_timeout_raw is not None:
         try:
@@ -216,6 +266,7 @@ def load_config(
         slurm_partition=slurm_partition,
         executor=executor,
         sync_mode=sync_mode,
+        canonical_remote_base=canonical_remote_base,
     )
 
 
@@ -338,8 +389,14 @@ def get_cluster_user() -> str:
 
 
 def get_remote_base() -> PurePosixPath:
-    """Return the configured remote base path."""
+    """Return the configured remote base path (worktree-suffixed if applicable)."""
     return _get_config().remote_base
+
+
+def get_canonical_remote_base() -> PurePosixPath:
+    """Return the shared remote base, without any worktree suffix."""
+    config = _get_config()
+    return config.canonical_remote_base or config.remote_base
 
 
 def get_ssh_key() -> Path:

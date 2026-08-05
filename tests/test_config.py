@@ -12,6 +12,7 @@ from cluster_kit.config import (
     ClusterConfig,
     ConfigError,
     _get_env_var,
+    _worktree_name,
     load_config,
     reset_config_cache,
     validate_config,
@@ -175,6 +176,81 @@ class TestLoadConfigEnvFile:
     def test_env_file_not_found_uses_env(self, minimal_env):
         cfg = load_config(env_file=Path("/nonexistent/.env"))
         assert cfg.remote_base == PurePosixPath("/mnt/slurm-beegfs/Users/test/project")
+
+
+# ---------------------------------------------------------------------------
+# Worktree isolation
+# ---------------------------------------------------------------------------
+
+
+class TestWorktreeName:
+    def test_linked_worktree_returns_dir_name(self, tmp_path):
+        wt = tmp_path / "my-feature"
+        wt.mkdir()
+        (wt / ".git").write_text("gitdir: /repo/.git/worktrees/my-feature\n")
+        assert _worktree_name(wt) == "my-feature"
+
+    def test_main_checkout_returns_none(self, tmp_path):
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        assert _worktree_name(repo) is None
+
+    def test_nested_dir_finds_enclosing_worktree(self, tmp_path):
+        wt = tmp_path / "my-feature"
+        nested = wt / "src" / "pkg"
+        nested.mkdir(parents=True)
+        (wt / ".git").write_text("gitdir: /repo/.git/worktrees/my-feature\n")
+        assert _worktree_name(nested) == "my-feature"
+
+    def test_outside_repo_returns_none(self, tmp_path):
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        assert _worktree_name(plain) is None
+
+
+class TestWorktreeIsolation:
+    @staticmethod
+    def _worktree(tmp_path, name="price-pressure-extension"):
+        wt = tmp_path / name
+        wt.mkdir()
+        (wt / ".git").write_text(f"gitdir: /repo/.git/worktrees/{name}\n")
+        return wt
+
+    def test_remote_base_suffixed_in_worktree(
+        self, tmp_path, monkeypatch, minimal_env
+    ):
+        monkeypatch.chdir(self._worktree(tmp_path))
+        cfg = load_config()
+        assert cfg.remote_base == PurePosixPath(
+            "/mnt/slurm-beegfs/Users/test/project__price-pressure-extension"
+        )
+        assert cfg.canonical_remote_base == PurePosixPath(
+            "/mnt/slurm-beegfs/Users/test/project"
+        )
+        assert cfg.is_worktree_isolated
+
+    def test_main_checkout_unchanged(self, tmp_path, monkeypatch, minimal_env):
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        monkeypatch.chdir(repo)
+        cfg = load_config()
+        assert cfg.remote_base == PurePosixPath("/mnt/slurm-beegfs/Users/test/project")
+        assert cfg.canonical_remote_base == cfg.remote_base
+        assert not cfg.is_worktree_isolated
+
+    def test_git_sync_mode_not_suffixed(self, tmp_path, monkeypatch, minimal_env):
+        # A git-mode remote is a single checkout at a fixed path — suffixing it
+        # would point at a directory that does not exist.
+        monkeypatch.chdir(self._worktree(tmp_path))
+        os.environ["CLUSTER_SYNC_MODE"] = "git"
+        cfg = load_config()
+        assert cfg.remote_base == PurePosixPath("/mnt/slurm-beegfs/Users/test/project")
+        assert not cfg.is_worktree_isolated
+
+    def test_trailing_slash_stripped(self, tmp_path, monkeypatch, clean_env):
+        os.environ["CLUSTER_REMOTE_BASE"] = "/mnt/project/"
+        monkeypatch.chdir(self._worktree(tmp_path, "wt"))
+        assert load_config().remote_base == PurePosixPath("/mnt/project__wt")
 
 
 # ---------------------------------------------------------------------------
