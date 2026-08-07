@@ -37,6 +37,7 @@ import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from rich import box
@@ -191,6 +192,8 @@ def maybe_launch(
     args: argparse.Namespace,
     *,
     env_vars: dict[str, str] | None = None,
+    fan_out: Sequence[str] | None = None,
+    fan_out_flag: str | None = None,
 ) -> bool:
     """Gate function: handle execution if needed, return True if handled.
 
@@ -203,10 +206,22 @@ def maybe_launch(
         args: Parsed CLI namespace (must include launcher args).
         env_vars: Optional dictionary of environment variables to export
             to the SLURM job.
+        fan_out: Optional values to spread across independent jobs — one job
+            per value, all running concurrently.  With a single value (or
+            None) exactly one job is submitted, so callers do not need to
+            special-case the common path.
+        fan_out_flag: CLI flag used to pass each *fan_out* value to the script,
+            e.g. ``"--whale-definitions"``.  Required when *fan_out* is given.
 
     Returns:
         True if execution was handled (caller should exit), False otherwise.
+
+    Raises:
+        ValueError: If *fan_out* is given without *fan_out_flag*.
     """
+    if fan_out and not fan_out_flag:
+        raise ValueError("fan_out requires fan_out_flag")
+
     run_from: str = getattr(args, "run_from", "local")
 
     # -- Cluster submission (always handled by the launcher) --
@@ -214,7 +229,9 @@ def maybe_launch(
         project_root = _find_project_root(script_path)
         if _confirm_and_prepare_cluster_submission(project_root):
             return True
-        _handle_cluster_submission(script_path, args, env_vars)
+        _handle_cluster_submission(
+            script_path, args, env_vars, fan_out=fan_out, fan_out_flag=fan_out_flag
+        )
         return True
 
     # -- Local execution: let the script handle it normally --
@@ -365,6 +382,11 @@ def _derive_job_name(script_path: str) -> str:
     return name
 
 
+def _slug(value: str) -> str:
+    """Make a fan-out value safe to embed in a SLURM job name."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-") or "x"
+
+
 def _derive_log_dir(script_path: str, project_root: Path) -> str:
     """Derive the SLURM log directory from the script path.
 
@@ -469,6 +491,9 @@ def _handle_cluster_submission(
     script_path: str,
     args: argparse.Namespace,
     env_vars: dict[str, str] | None,
+    *,
+    fan_out: Sequence[str] | None = None,
+    fan_out_flag: str | None = None,
 ) -> None:
     """Submit job(s) to the SLURM cluster via SSH."""
     resolve_slurm_resources(args)
@@ -520,21 +545,35 @@ def _handle_cluster_submission(
         )
     )
 
-    _submit_single(
-        rel_script,
-        args,
-        script_args,
-        partition,
-        qos,
-        cpus,
-        mem,
-        slurm_time,
-        job_name,
-        remote_log_dir,
-        texlive,
-        env_vars,
-        mail_user,
-    )
+    # One independent job per fan-out value; no fan-out means a single job.
+    # Deliberately not a SLURM array: arrays force every task to share one
+    # resource request and one log file pattern, and the worker would have to
+    # know how to index into the value list. N plain jobs give the same
+    # parallelism with none of that coupling.
+    values = list(fan_out) if fan_out else [None]
+    for value in values:
+        job_args = list(script_args)
+        suffix = ""
+        if value is not None:
+            job_args += [fan_out_flag, value]
+            suffix = f"_{_slug(value)}"
+
+        _submit_single(
+            rel_script,
+            args,
+            job_args,
+            partition,
+            qos,
+            cpus,
+            mem,
+            slurm_time,
+            f"{job_name}{suffix}",
+            remote_log_dir,
+            texlive,
+            env_vars,
+            mail_user,
+            project_root,
+        )
 
 
 def _build_sbatch_base(
@@ -591,47 +630,44 @@ def _submit_single(
     texlive: bool,
     env_vars: dict[str, str] | None,
     mail_user: str,
+    project_root: Path | None = None,
 ) -> None:
-    """Submit a single SLURM job."""
+    """Submit a single SLURM job through the shared worker script.
+
+    Goes through :func:`render_sbatch_argv` so this path behaves identically to
+    workflow submission: same worker, same exports, same conda/uv autodetection.
+    It previously inlined an ``sbatch --wrap`` script that activated a hardcoded
+    ``conda_envs/cluster-kit`` prefix and exported no ``PROJECT_DIR``, which
+    meant it worked for no real project and never used the worker at all.
+    """
     remote_base = get_remote_base()
+    root = project_root or Path.cwd()
 
-    sbatch = _build_sbatch_base(
-        partition,
-        qos,
-        cpus,
-        mem,
-        slurm_time,
-        job_name,
-        log_dir,
-        "%x_%j",
-        mail_user,
-    )
+    worker_remote_path = resolve_remote_worker(root, None, str(remote_base))
+    if worker_remote_path is None:
+        return
 
-    # Build environment variables for export
-    env_parts: list[str] = []
-    if texlive:
-        env_parts.append("TEXLIVE=1")
-    if env_vars:
-        for key, value in env_vars.items():
-            env_parts.append(f"{key}={value}")
+    command = " ".join(shlex.quote(s) for s in ["python", rel_script, *script_args])
 
-    if env_parts:
-        sbatch.append(f"--export=ALL,{','.join(env_parts)}")
-
-    # Build Python command
-    python_cmd = ["python", rel_script]
-    python_cmd.extend(script_args)
-
-    # Create a wrapper script inline
-    wrapper = f"""#!/bin/bash
-eval "$(conda shell.bash hook)"
-conda activate "{remote_base}/conda_envs/cluster-kit"
-cd "{remote_base}"
-{" ".join(shlex.quote(s) for s in python_cmd)}
-"""
-
-    sbatch.append("--wrap")
-    sbatch.append(wrapper)
+    try:
+        sbatch = render_sbatch_argv(
+            command,
+            remote_base=str(remote_base),
+            partition=partition,
+            cpus=cpus,
+            mem=mem,
+            time=slurm_time,
+            job_name=job_name,
+            log_dir=log_dir,
+            worker_remote_path=worker_remote_path,
+            mail_user=mail_user,
+            qos=qos,
+            texlive=texlive,
+            env_vars=env_vars,
+        )
+    except ValueError as exc:
+        _console.print(f"[red]Cannot submit:[/red] {exc}")
+        return
 
     full_cmd = f"cd {remote_base} && {' '.join(shlex.quote(s) for s in sbatch)}"
     job_id = _ssh_submit(full_cmd)
