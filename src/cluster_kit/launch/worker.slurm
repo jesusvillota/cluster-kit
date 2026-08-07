@@ -1,41 +1,44 @@
 #!/bin/bash
-# Generic SLURM worker script for Python scripts.
+# Centralized SLURM worker script, owned by cluster-kit.
 #
-# This script sets up the cluster environment (conda, modules, temp dirs)
-# and executes the Python command passed as positional arguments ($@).
+# Consuming repos do NOT keep a copy of this file. `cluster-kit sync code`
+# deploys it to {remote_base}/.cluster_kit/worker.slurm on every sync, so the
+# worker always matches the cluster-kit that deployed it. Each git worktree
+# gets its own copy (.cluster_kit is never shared between worktrees).
 #
-# It is NOT meant to be submitted directly — the launcher module
-# generates the correct sbatch command automatically and overrides
-# the default #SBATCH directives below.
+# It is NOT submitted directly — the launcher builds the sbatch command and
+# passes the python command as positional arguments ($@). Every #SBATCH flag
+# that mattered is set on the sbatch command line by _build_sbatch_base, which
+# is why this file carries no #SBATCH defaults.
 #
-# Usage (via launcher — you don't call this directly):
+# Environment variables (all exported by the launcher):
+#   PROJECT_DIR          — Remote deployment root. REQUIRED; worktree-specific.
+#   CLUSTER_REMOTE_BASE  — Same value; exported so cluster_kit's config inside
+#                          the job resolves to the deployment it is running
+#                          from rather than whatever the submitting shell had.
+#   CLUSTER_TEXLIVE_ROOT — TeX Live installation root (optional).
+#   TEXLIVE              — "1" to put TeX Live on PATH (visualization scripts).
 #
-#   Single job:
-#     sbatch --partition=cpu_shared --cpus-per-task=16 --mem=64G --time=04:00:00 \
-#       worker.slurm python path/to/script.py [args]
-#
-# Customization via environment variables:
-#   PROJECT_DIR   — Project root directory (default: auto-detected from script path)
-#   CONDA_ENV     — Conda environment name or path (default: "conda_envs")
-#   TEXLIVE       — Set to "1" to enable TeX Live (for visualization scripts)
-#   MAIL_USER     — Email address for SLURM notifications
-
-# Default SBATCH directives (overridden by CLI args from the launcher)
-#SBATCH --partition=cpu_express
-#SBATCH --qos=cpu_express
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --time=02:00:00
-#SBATCH --mem=64G
-#SBATCH --mail-type=BEGIN,END,FAIL
-#SBATCH --mail-user=computingjvm@gmail.com
+# The python runtime is autodetected from the deployment: a .venv directory
+# means uv, a conda_envs directory means conda.
 
 set -euo pipefail
 
 # ==============================================================================
-# Project directory (override via PROJECT_DIR env var)
+# Deployment root
 # ==============================================================================
-PROJECT_DIR="${PROJECT_DIR:-.}"
+# No fallback on purpose: a job that does not know its own deployment must fail
+# loudly rather than silently run against a guessed path.
+PROJECT_DIR="${PROJECT_DIR:?PROJECT_DIR not exported by the launcher}"
+
+# Make the job self-describing: anything importing cluster_kit inside this job
+# resolves the base it is actually running from.
+export CLUSTER_KIT_JOB=1
+export CLUSTER_REMOTE_BASE="${CLUSTER_REMOTE_BASE:-$PROJECT_DIR}"
+
+# uv installs to ~/.local/bin, which non-interactive sbatch shells do not have
+# on PATH (no .bashrc is sourced). Harmless when the runtime is conda.
+export PATH="$HOME/.local/bin:$PATH"
 
 # ==============================================================================
 # Resource exports
@@ -61,27 +64,21 @@ fi
 mkdir -p "$DUCKDB_TEMP_DIR" "$MPLCONFIGDIR"
 trap 'rm -rf "$DUCKDB_TEMP_DIR" "$MPLCONFIGDIR"' EXIT
 
-# ==============================================================================
-# Environment setup
-# ==============================================================================
-# Activate conda environment (override via CONDA_ENV env var)
-CONDA_ENV="${CONDA_ENV:-conda_envs}"
-if [[ -d "$CONDA_ENV" ]]; then
-    # Path-based environment
-    conda activate "$CONDA_ENV"
-else
-    # Named environment
-    conda activate "$CONDA_ENV"
-fi
+cd "$PROJECT_DIR"
 
-# TeX Live (activated when TEXLIVE=1 env var is set by the launcher)
+# ==============================================================================
+# TeX Live (matplotlib text.usetex)
+# ==============================================================================
+# Must come before the runtime activation below so TeX Live wins over any LaTeX
+# bundled in the environment.
 if [[ "${TEXLIVE:-0}" == "1" ]]; then
-    if [[ -f "${PROJECT_DIR}/runnables/sh/helpers/texlive_path.sh" ]]; then
-        source "${PROJECT_DIR}/runnables/sh/helpers/texlive_path.sh"
+    if [[ -n "${CLUSTER_TEXLIVE_ROOT:-}" ]]; then
+        export PATH="${CLUSTER_TEXLIVE_ROOT}/bin/x86_64-linux:$PATH"
+        export TEXMFHOME="${CLUSTER_TEXLIVE_ROOT}/texmf-local"
+    else
+        echo "WARNING: TEXLIVE=1 but CLUSTER_TEXLIVE_ROOT is unset" >&2
     fi
 fi
-
-cd "$PROJECT_DIR"
 
 # ==============================================================================
 # Info banner
@@ -103,6 +100,43 @@ echo "============================================="
 echo ""
 
 # ==============================================================================
-# Execute the Python command
+# Runtime activation and execution
 # ==============================================================================
-"$@"
+if [[ -d .venv ]]; then
+    echo "Runtime        : uv (.venv)"
+    # --no-sync: the cluster has no git, so uv cannot resolve the cluster-kit
+    # git dependency here. The venv is built on the login node and cluster_kit
+    # is mirrored in by the deploy.
+    exec uv run --frozen --no-sync "$@"
+elif [[ -d conda_envs ]]; then
+    echo "Runtime        : conda (conda_envs)"
+    # Bootstrap the module system, then conda itself. Compute nodes give us a
+    # bare non-interactive shell, so neither is on PATH by default.
+    if [[ -f /etc/profile.d/modules.sh ]]; then
+        source /etc/profile.d/modules.sh
+    elif [[ -f /usr/share/modules/init/bash ]]; then
+        source /usr/share/modules/init/bash
+    elif [[ -f /opt/modules/init/bash ]]; then
+        source /opt/modules/init/bash
+    fi
+
+    module load conda/3 2>/dev/null || {
+        for _conda in /opt/conda/bin/conda /usr/local/conda/bin/conda /opt/anaconda3/bin/conda; do
+            if [[ -f "$_conda" ]]; then
+                export PATH="$(dirname "$_conda"):$PATH"
+                break
+            fi
+        done
+    }
+
+    eval "$(conda shell.bash hook)" || {
+        echo "ERROR: could not initialize conda" >&2
+        exit 1
+    }
+    conda activate "${PROJECT_DIR}/conda_envs"
+    exec "$@"
+else
+    echo "ERROR: no python runtime found in ${PROJECT_DIR}" >&2
+    echo "       expected a .venv/ (uv) or conda_envs/ (conda) directory" >&2
+    exit 1
+fi

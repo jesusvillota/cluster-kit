@@ -52,6 +52,17 @@ def parse_pyproject(path: Path) -> dict:
     optional_deps = project.get("optional-dependencies", {})
     dev_dependencies = list(optional_deps.get("dev", []))
 
+    # uv keeps git/path dependencies out of [project].dependencies — the bare
+    # name goes there and the real location in [tool.uv.sources].  pip cannot
+    # resolve the bare name (it is not on PyPI), and a failed resolution aborts
+    # the whole `pip:` block in the generated environment.yml, silently taking
+    # unrelated packages down with it.  Rewrite them to PEP 508 direct
+    # references so the environment builds.
+    sources = data.get("tool", {}).get("uv", {}).get("sources", {})
+    if sources:
+        dependencies = [_apply_uv_source(d, sources) for d in dependencies]
+        dev_dependencies = [_apply_uv_source(d, sources) for d in dev_dependencies]
+
     python_version = _extract_python_version(requires_python)
 
     return {
@@ -60,6 +71,35 @@ def parse_pyproject(path: Path) -> dict:
         "dependencies": dependencies,
         "dev_dependencies": dev_dependencies,
     }
+
+
+def _apply_uv_source(dependency: str, sources: dict) -> str:
+    """Rewrite a bare dependency name using its ``[tool.uv.sources]`` entry.
+
+    Args:
+        dependency: Dependency string from ``[project].dependencies``.
+        sources: The ``[tool.uv.sources]`` table.
+
+    Returns:
+        A PEP 508 direct reference (``name @ git+URL``) when the dependency has
+        a git source, otherwise the dependency unchanged.
+    """
+    # Only bare names can be remapped; anything with a version/extra/marker
+    # already says where it comes from.
+    name = dependency.strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        return dependency
+
+    source = sources.get(name)
+    if not isinstance(source, dict):
+        return dependency
+
+    git_url = source.get("git")
+    if not git_url:
+        return dependency
+
+    ref = source.get("rev") or source.get("tag") or source.get("branch")
+    return f"{name} @ git+{git_url}@{ref}" if ref else f"{name} @ git+{git_url}"
 
 
 def _extract_python_version(requires_python: str) -> str:
@@ -167,7 +207,15 @@ if [ -d "$ENV_PATH" ]; then
 fi
 
 echo "Creating environment at $ENV_PATH from $ENV_FILE ..."
-conda env create --prefix "$ENV_PATH" --file "$ENV_FILE" --yes
+# A pip resolution failure aborts the whole `pip:` block while still leaving a
+# usable bin/python behind, so the exit code is the only honest signal that the
+# environment is complete. Checking bin/python alone reports success for an env
+# that is silently missing packages.
+if ! conda env create --prefix "$ENV_PATH" --file "$ENV_FILE" --yes; then
+    echo "Error: conda env create failed — the environment is incomplete." >&2
+    echo "       Fix the failure above and rerun; do not use this env." >&2
+    exit 1
+fi
 
 # Check if environment was created successfully before trying to activate
 if [ -d "$ENV_PATH" ] && [ -f "$ENV_PATH/bin/python" ]; then

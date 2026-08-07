@@ -50,7 +50,35 @@ def test_submit_command_uses_project_worker_script(tmp_path: Path) -> None:
     assert "alpha beta" in captured[0]
 
 
-def test_submit_command_returns_none_when_worker_missing(tmp_path: Path) -> None:
+def test_submit_command_falls_back_to_packaged_worker(tmp_path: Path) -> None:
+    """No repo-local worker means the centralized one, not a failed submit."""
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    with (
+        patch(
+            "cluster_kit.launch.launcher.get_remote_base",
+            return_value="/remote/project",
+        ),
+        patch("cluster_kit.launch.launcher._ssh_run"),
+        patch(
+            "cluster_kit.launch.launcher._ssh_submit", return_value="12345"
+        ) as submit,
+    ):
+        job_id = submit_command(
+            "uv run src/demo.py",
+            project_root=project_root,
+            sync=False,
+        )
+
+    assert job_id == "12345"
+    assert "/remote/project/.cluster_kit/worker.slurm" in submit.call_args[0][0]
+
+
+def test_submit_command_returns_none_when_explicit_worker_missing(
+    tmp_path: Path,
+) -> None:
+    """An explicit worker_script that does not exist is still an error."""
     project_root = tmp_path / "project"
     project_root.mkdir()
 
@@ -65,6 +93,7 @@ def test_submit_command_returns_none_when_worker_missing(tmp_path: Path) -> None
         job_id = submit_command(
             "uv run src/demo.py",
             project_root=project_root,
+            worker_script="runnables/slurm/nope.slurm",
             sync=False,
         )
 

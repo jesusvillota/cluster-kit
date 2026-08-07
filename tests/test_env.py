@@ -55,6 +55,67 @@ class TestParsePyproject:
         assert "pytest>=7.0" in data["dev_dependencies"]
         assert "ruff>=0.1.0" in data["dev_dependencies"]
 
+    def test_uv_git_source_becomes_direct_reference(self, tmp_path: Path):
+        """A bare name that uv resolves via git is not installable by pip.
+
+        Left bare, `pip install cluster-kit` hits PyPI, fails, and aborts the
+        whole `pip:` block — which is how python-dotenv silently vanished from
+        a working conda env.
+        """
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            textwrap.dedent("""\
+                [project]
+                name = "my-app"
+                requires-python = ">=3.11"
+                dependencies = ["cluster-kit", "requests>=2.28.0"]
+
+                [tool.uv.sources]
+                cluster-kit = { git = "https://github.com/jesusvillota/cluster-kit" }
+            """)
+        )
+
+        data = parse_pyproject(pyproject)
+
+        assert (
+            "cluster-kit @ git+https://github.com/jesusvillota/cluster-kit"
+            in data["dependencies"]
+        )
+        assert "cluster-kit" not in data["dependencies"]
+        # Untouched: it already says where it comes from.
+        assert "requests>=2.28.0" in data["dependencies"]
+
+    def test_uv_git_source_with_rev(self, tmp_path: Path):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            textwrap.dedent("""\
+                [project]
+                name = "my-app"
+                requires-python = ">=3.11"
+                dependencies = ["pinned-dep"]
+
+                [tool.uv.sources]
+                pinned-dep = { git = "https://example.com/x", rev = "abc123" }
+            """)
+        )
+        deps = parse_pyproject(pyproject)["dependencies"]
+        assert deps == ["pinned-dep @ git+https://example.com/x@abc123"]
+
+    def test_non_git_uv_source_left_alone(self, tmp_path: Path):
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            textwrap.dedent("""\
+                [project]
+                name = "my-app"
+                requires-python = ">=3.11"
+                dependencies = ["local-dep"]
+
+                [tool.uv.sources]
+                local-dep = { path = "../local-dep" }
+            """)
+        )
+        assert parse_pyproject(pyproject)["dependencies"] == ["local-dep"]
+
     def test_parse_minimal_pyproject(self, tmp_path: Path):
         content = textwrap.dedent("""\
             [project]

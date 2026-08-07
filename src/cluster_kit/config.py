@@ -25,7 +25,14 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - depends on the runtime environment
+    # Cluster environments are built separately from the laptop and have gone
+    # missing python-dotenv before.  A job that was handed its configuration
+    # via the environment does not need .env at all, so degrade rather than
+    # take down every module that imports this one.
+    load_dotenv = None
 
 __all__ = [
     "ClusterConfig",
@@ -36,6 +43,7 @@ __all__ = [
     "get_cluster_user",
     "get_remote_base",
     "get_canonical_remote_base",
+    "get_texlive_root",
     "get_ssh_key",
     "get_ssh_timeout",
     "get_sync_exclude",
@@ -109,6 +117,8 @@ class ClusterConfig:
             or ``ssh`` (detached processes on a plain remote machine).
         sync_mode: Code sync strategy: ``rsync`` (push working tree) or
             ``git`` (remote checkout pulls from the shared GitHub remote).
+        texlive_root: TeX Live installation root on the cluster.  Exported to
+            jobs that request TeX Live; empty when the cluster has none.
     """
 
     host: str
@@ -121,6 +131,7 @@ class ClusterConfig:
     executor: str = _DEFAULT_EXECUTOR
     sync_mode: str = _DEFAULT_SYNC_MODE
     canonical_remote_base: Optional[PurePosixPath] = None
+    texlive_root: str = ""
 
     def __post_init__(self) -> None:
         if self.canonical_remote_base is None:
@@ -206,11 +217,20 @@ def load_config(
     Raises:
         ConfigError: If a required variable is missing or has an invalid value.
     """
-    # Load .env file if present
+    # Load .env file if present.
+    #
+    # Precedence flips depending on where we are running.  On a laptop ".env is
+    # truth": it must beat a stale CLUSTER_* left ambient in the shell, which is
+    # why override defaults to True.  Inside a job the opposite holds — the
+    # launcher exported the deployment this job belongs to, and the .env sitting
+    # at a worktree deployment root is a symlink to the *canonical* one, so
+    # letting it win would silently redirect the job to another deployment.
+    # worker.slurm sets CLUSTER_KIT_JOB=1 to mark that boundary.
     if env_file is None:
         env_file = Path(".env")
-    if env_file.exists():
-        load_dotenv(env_file, override=True)
+    if load_dotenv is not None and env_file.exists():
+        in_job = os.getenv("CLUSTER_KIT_JOB") == "1"
+        load_dotenv(env_file, override=not in_job)
 
     # Determine active profile
     if env_profile is None:
@@ -228,6 +248,7 @@ def load_config(
     )
     executor = _get_env_var("EXECUTOR", env_profile) or _DEFAULT_EXECUTOR
     sync_mode = _get_env_var("SYNC_MODE", env_profile) or _DEFAULT_SYNC_MODE
+    texlive_root = _get_env_var("TEXLIVE_ROOT", env_profile) or ""
 
     # Type conversions
     if remote_base_raw is None:
@@ -267,6 +288,7 @@ def load_config(
         executor=executor,
         sync_mode=sync_mode,
         canonical_remote_base=canonical_remote_base,
+        texlive_root=texlive_root,
     )
 
 
@@ -397,6 +419,11 @@ def get_canonical_remote_base() -> PurePosixPath:
     """Return the shared remote base, without any worktree suffix."""
     config = _get_config()
     return config.canonical_remote_base or config.remote_base
+
+
+def get_texlive_root() -> str:
+    """Return the cluster's TeX Live root, or "" when unconfigured."""
+    return _get_config().texlive_root
 
 
 def get_ssh_key() -> Path:

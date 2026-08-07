@@ -20,7 +20,7 @@ from cluster_kit.config import (
     get_executor,
     get_remote_base,
 )
-from cluster_kit.launch.launcher import _resolve_worker_script, render_sbatch_argv
+from cluster_kit.launch.launcher import render_sbatch_argv, resolve_remote_worker
 from cluster_kit.workflow.runner import WorkflowError, WorkflowJob, WorkflowPlan
 
 SCHEMA_VERSION = 2
@@ -108,13 +108,11 @@ def build_execution_plan(
     worker_remote_path = None
     mail_user = os.getenv("CLUSTER_EMAIL", "")
     if executor == "slurm":
-        resolved_worker = _resolve_worker_script(plan.project_root, plan.worker_script)
-        if resolved_worker is None:
-            raise WorkflowError(f"worker script not found: {plan.worker_script}")
-        worker_remote_path = (
-            f"{remote_base}/"
-            f"{resolved_worker.relative_to(plan.project_root).as_posix()}"
+        worker_remote_path = resolve_remote_worker(
+            plan.project_root, plan.worker_script, str(remote_base)
         )
+        if worker_remote_path is None:
+            raise WorkflowError(f"worker script not found: {plan.worker_script}")
 
     workflow_slug = _slugify(plan.name)
     run_id = f"{workflow_slug}_{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}"

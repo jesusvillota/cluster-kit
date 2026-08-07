@@ -108,6 +108,11 @@ class TestProvisionRemoteClusterKit:
             ),
             patch.object(
                 CodeDeployer,
+                "provision_remote_worker",
+                lambda self: calls.append("worker") or True,
+            ),
+            patch.object(
+                CodeDeployer,
                 "provision_remote_cluster_kit",
                 lambda self: calls.append("provision") or True,
             ),
@@ -124,6 +129,7 @@ class TestProvisionRemoteClusterKit:
             "base",
             "remove",
             "sync",
+            "worker",
             "provision",
             "verify",
         ]

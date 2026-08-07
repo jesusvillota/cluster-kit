@@ -43,7 +43,7 @@ from rich import box
 from rich.console import Console
 from rich.panel import Panel
 
-from cluster_kit.config import get_cluster_host, get_remote_base
+from cluster_kit.config import get_cluster_host, get_remote_base, get_texlive_root
 
 __all__ = [
     "add_launcher_args",
@@ -84,7 +84,14 @@ PARTITION_DEFAULTS: dict[str, tuple[int, str, str]] = {
     "gpu_long_unlimited": (16, "8G", "UNLIMITED"),
 }
 
+# Legacy per-repo worker location. Still honoured so repos migrate by deleting
+# it, but cluster-kit now ships the worker itself.
 _DEFAULT_WORKER_SCRIPT = Path("runnables/slurm/worker.slurm")
+
+# Where `sync code` deploys the packaged worker, relative to remote_base.
+# Lives under .cluster_kit so each git worktree gets its own copy (that
+# directory is never symlinked between worktree deployments).
+REMOTE_WORKER_RELPATH = ".cluster_kit/worker.slurm"
 
 # Rich console for launcher output
 _console = Console()
@@ -414,6 +421,43 @@ def _resolve_worker_script(
         return None
 
     return candidate
+
+
+def resolve_remote_worker(
+    project_root: Path,
+    worker_script: Path | str | None,
+    remote_base: str,
+) -> str | None:
+    """Return the remote path of the worker script to submit.
+
+    cluster-kit owns the worker: ``sync code`` deploys the packaged template to
+    ``{remote_base}/.cluster_kit/worker.slurm``, so repos need no copy of their
+    own.  A repo-local ``runnables/slurm/worker.slurm`` still wins if present,
+    which makes deleting that file the per-repo migration switch.
+
+    Args:
+        project_root: Local project root.
+        worker_script: Explicit override, or None for the default.
+        remote_base: Remote deployment root.
+
+    Returns:
+        The remote worker path, or None if an explicit override was invalid.
+    """
+    if worker_script is None and not (project_root / _DEFAULT_WORKER_SCRIPT).exists():
+        return f"{remote_base}/{REMOTE_WORKER_RELPATH}"
+
+    resolved = _resolve_worker_script(project_root, worker_script)
+    if resolved is None:
+        return None
+
+    if worker_script is None:
+        _console.print(
+            "[yellow]Using repo-local "
+            f"{_DEFAULT_WORKER_SCRIPT}[/yellow] — cluster-kit now ships the "
+            "worker itself; delete that file to use the centralized one."
+        )
+
+    return f"{remote_base}/{resolved.relative_to(project_root).as_posix()}"
 
 
 # ---------------------------------------------------------------------------
@@ -766,20 +810,10 @@ def submit_command(
     remote_log_dir = f"{remote_base}/{log_dir}"
     _ssh_run(f"mkdir -p '{remote_log_dir}'")
 
-    resolved_worker = _resolve_worker_script(local_project_root, worker_script)
-    if resolved_worker is None:
-        return None
-
-    try:
-        remote_worker = (
-            f"{remote_base}/"
-            f"{resolved_worker.relative_to(local_project_root).as_posix()}"
-        )
-    except ValueError:
-        _console.print(
-            "[red]Worker script must live under the project root so it can be "
-            f"synced:[/red] {resolved_worker}"
-        )
+    remote_worker = resolve_remote_worker(
+        local_project_root, worker_script, str(remote_base)
+    )
+    if remote_worker is None:
         return None
 
     try:
@@ -858,7 +892,13 @@ def render_sbatch_argv(
     env_parts: dict[str, str] = {}
     if texlive:
         env_parts["TEXLIVE"] = "1"
+        texlive_root = get_texlive_root()
+        if texlive_root:
+            env_parts["CLUSTER_TEXLIVE_ROOT"] = texlive_root
     env_parts["PROJECT_DIR"] = remote_base
+    # Tell the job which deployment it belongs to, so cluster_kit inside the job
+    # does not fall back to the submitting shell or to a shared .env symlink.
+    env_parts["CLUSTER_REMOTE_BASE"] = remote_base
     if env_vars:
         env_parts.update(env_vars)
     exports = ",".join(f"{key}={value}" for key, value in env_parts.items())

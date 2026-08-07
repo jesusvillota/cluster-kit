@@ -363,13 +363,19 @@ stages:
     assert "--time=168:00:00" in argv
     assert "--job-name=panel" in argv
     assert "--output=_logs_/workflows/demo/build/%x_%j.out" in argv
-    assert f"--export=ALL,PROJECT_DIR={REMOTE_BASE}" in argv
+    assert (
+        f"--export=ALL,PROJECT_DIR={REMOTE_BASE},CLUSTER_REMOTE_BASE={REMOTE_BASE}"
+        in argv
+    )
     assert not any(arg.startswith("--dependency") for arg in argv)
     worker_pos = argv.index(f"{REMOTE_BASE}/runnables/slurm/worker.slurm")
     assert argv[worker_pos + 1 :] == ["python", "src/process.py", "--years", "2015"]
 
     plot_argv = plot_job["sbatch_argv"]
-    assert f"--export=ALL,TEXLIVE=1,PROJECT_DIR={REMOTE_BASE}" in plot_argv
+    assert (
+        f"--export=ALL,TEXLIVE=1,PROJECT_DIR={REMOTE_BASE},"
+        f"CLUSTER_REMOTE_BASE={REMOTE_BASE}" in plot_argv
+    )
 
 
 def test_execution_plan_ssh_executor_renders_commands(tmp_path: Path) -> None:

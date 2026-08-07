@@ -33,7 +33,7 @@ cluster-kit = "cluster_kit.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-cluster_kit = ["tui/assets/*.html"]
+cluster_kit = ["tui/assets/*.html", "launch/worker.slurm"]
 
 [tool.ruff]
 target-version = "py310"

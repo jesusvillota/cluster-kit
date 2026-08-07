@@ -254,6 +254,71 @@ class TestWorktreeIsolation:
 
 
 # ---------------------------------------------------------------------------
+# .env precedence (laptop vs inside a job)
+# ---------------------------------------------------------------------------
+
+
+class TestDotenvPrecedence:
+    """`.env` is truth on a laptop; the job environment is truth in a job.
+
+    Inside a worktree job the `.env` at the deployment root is a symlink to the
+    canonical one, so letting it win would silently redirect the job to another
+    worktree's deployment.
+    """
+
+    @staticmethod
+    def _env_file(tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text("CLUSTER_REMOTE_BASE=/from/dotenv\n")
+        return env_file
+
+    def test_dotenv_wins_on_laptop(self, tmp_path, clean_env):
+        os.environ["CLUSTER_REMOTE_BASE"] = "/from/shell"
+        cfg = load_config(env_file=self._env_file(tmp_path))
+        assert cfg.remote_base == PurePosixPath("/from/dotenv")
+
+    def test_environment_wins_inside_job(self, tmp_path, clean_env):
+        os.environ["CLUSTER_KIT_JOB"] = "1"
+        os.environ["CLUSTER_REMOTE_BASE"] = "/deployment/for/this/job"
+        cfg = load_config(env_file=self._env_file(tmp_path))
+        assert cfg.remote_base == PurePosixPath("/deployment/for/this/job")
+
+    def test_dotenv_still_fills_unset_vars_inside_job(self, tmp_path, clean_env):
+        """Only deliberate exports are protected; .env still supplies the rest."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "CLUSTER_REMOTE_BASE=/from/dotenv\nCLUSTER_HOST=dotenv-host\n"
+        )
+        os.environ["CLUSTER_KIT_JOB"] = "1"
+        os.environ["CLUSTER_REMOTE_BASE"] = "/deployment/for/this/job"
+        cfg = load_config(env_file=env_file)
+        assert cfg.remote_base == PurePosixPath("/deployment/for/this/job")
+        assert cfg.host == "dotenv-host"
+
+
+class TestDotenvOptional:
+    def test_config_loads_without_python_dotenv(self, monkeypatch, clean_env):
+        """A cluster env missing python-dotenv must not break every import."""
+        import cluster_kit.config as config_mod
+
+        monkeypatch.setattr(config_mod, "load_dotenv", None)
+        os.environ["CLUSTER_REMOTE_BASE"] = "/from/environment"
+        cfg = load_config(env_file=Path("/nonexistent/.env"))
+        assert cfg.remote_base == PurePosixPath("/from/environment")
+
+    def test_existing_env_file_ignored_without_dotenv(
+        self, tmp_path, monkeypatch, clean_env
+    ):
+        import cluster_kit.config as config_mod
+
+        monkeypatch.setattr(config_mod, "load_dotenv", None)
+        (tmp_path / ".env").write_text("CLUSTER_REMOTE_BASE=/from/dotenv\n")
+        os.environ["CLUSTER_REMOTE_BASE"] = "/from/environment"
+        cfg = load_config(env_file=tmp_path / ".env")
+        assert cfg.remote_base == PurePosixPath("/from/environment")
+
+
+# ---------------------------------------------------------------------------
 # validate_config
 # ---------------------------------------------------------------------------
 

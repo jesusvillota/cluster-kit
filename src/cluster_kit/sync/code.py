@@ -32,6 +32,7 @@ from cluster_kit.config import (
     get_cluster_host,
     get_remote_base,
 )
+from cluster_kit.launch import get_worker_template
 from cluster_kit.utils import (
     ClusterConnection,
     PythonCacheCleaner,
@@ -247,6 +248,13 @@ class CodeDeployer:
 
         table.add_row(
             str(step),
+            "Deploy worker.slurm",
+            f"{self._remote_base}/.cluster_kit/worker.slurm",
+        )
+        step += 1
+
+        table.add_row(
+            str(step),
             "Provision cluster_kit",
             "Mirror local package into remote .venv (skip if no venv)",
         )
@@ -280,6 +288,11 @@ class CodeDeployer:
     # whose job is whose.
     UNSHARED = ("_logs_", ".cluster_kit", ".git")
 
+    # Transient droppings at the canonical root that should not be mirrored into
+    # every worktree deployment.  Without these a real base accumulated 22 junk
+    # symlinks against 10 useful ones.
+    UNSHARED_GLOBS = ("slurm-*.out", "slurm-*.err", "__pycache__", "*.pyc")
+
     def provision_remote_base(self) -> bool:
         """Create the worktree deployment directory and its shared symlinks.
 
@@ -303,7 +316,8 @@ class CodeDeployer:
             f"shares everything else with {canonical}[/dim]"
         )
 
-        skip = "|".join((*self.directories, *self.UNSHARED))
+        # `case` patterns, so the globs work as-is alongside the literal names.
+        skip = "|".join((*self.directories, *self.UNSHARED, *self.UNSHARED_GLOBS))
         # `* .[!.]*` covers dotfiles; unmatched globs stay literal, so the
         # -e guard on the source is what filters them out.
         script = (
@@ -370,6 +384,61 @@ class CodeDeployer:
                 return False
 
         console.print("\n[green][OK][/green] Remote directories cleaned\n")
+        return True
+
+    def provision_remote_worker(self) -> bool:
+        """Deploy cluster-kit's packaged worker.slurm to the remote base.
+
+        Consuming repos do not keep a copy of the worker; it is shipped with
+        cluster-kit and refreshed on every sync, so the worker on the cluster
+        always matches the cluster-kit that put it there.
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        template = get_worker_template()
+        if not template.is_file():
+            show_error_panel(
+                "Packaged worker.slurm is missing",
+                f"Expected it at {template}. This is a cluster-kit packaging "
+                "problem, not a project one.",
+            )
+            return False
+
+        remote_dir = f"{self._remote_base}/.cluster_kit"
+        remote_path = f"{remote_dir}/worker.slurm"
+        console.print(f"[cyan]Deploying worker[/cyan] -> {remote_path}")
+
+        try:
+            mk = subprocess.run(
+                ["ssh", self._ssh_host, f'mkdir -p "{remote_dir}"'],
+                capture_output=True,
+                text=True,
+            )
+            if mk.returncode != 0:
+                show_error_panel("Failed to create remote .cluster_kit", mk.stderr)
+                return False
+
+            result = subprocess.run(
+                ["scp", "-q", str(template), f"{self._ssh_host}:{remote_path}"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                show_error_panel("Failed to deploy worker.slurm", result.stderr)
+                return False
+
+            # sbatch needs it executable.
+            subprocess.run(
+                ["ssh", self._ssh_host, f'chmod +x "{remote_path}"'],
+                capture_output=True,
+                text=True,
+            )
+        except Exception as e:
+            show_error_panel("Error deploying worker.slurm", str(e))
+            return False
+
+        console.print("[green][OK][/green] Worker deployed\n")
         return True
 
     def sync_directories(self) -> bool:
@@ -569,6 +638,10 @@ class CodeDeployer:
 
         # Step 5: Sync directories (rsync excludes __pycache__/*.pyc/*.pyo)
         if not self.sync_directories():
+            return False
+
+        # Step 6: Deploy cluster-kit's own worker.slurm
+        if not self.provision_remote_worker():
             return False
 
         # Step 6: Mirror cluster_kit into the remote uv venv (skipped for
