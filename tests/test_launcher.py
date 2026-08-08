@@ -354,3 +354,46 @@ def test_run_from_pc_is_an_accepted_choice() -> None:
     parser = argparse.ArgumentParser()
     add_launcher_args(parser)
     assert parser.parse_args(["--run-from", "pc"]).run_from == "pc"
+
+
+def test_fan_out_flag_is_not_duplicated(tmp_path: Path) -> None:
+    """The caller's own --defs a,b,c must not survive alongside the per-job value."""
+    with (
+        patch(
+            "cluster_kit.launch.launcher._strip_launcher_flags_from_argv",
+            return_value=["--defs", "aa,bb", "--years", "2020"],
+        ),
+        _capture_submissions(tmp_path) as submitted,
+    ):
+        maybe_launch(
+            str(tmp_path / "src" / "process.py"),
+            _fanout_args(),
+            fan_out=["aa", "bb"],
+            fan_out_flag="--defs",
+        )
+
+    for cmd in submitted:
+        assert cmd.count("--defs") == 1, cmd
+    assert "--defs aa" in submitted[0]
+    assert "--defs bb" in submitted[1]
+    # Unrelated script args survive.
+    assert "--years 2020" in submitted[0]
+
+
+def test_fan_out_flag_equals_form_also_stripped(tmp_path: Path) -> None:
+    with (
+        patch(
+            "cluster_kit.launch.launcher._strip_launcher_flags_from_argv",
+            return_value=["--defs=aa,bb", "--years", "2020"],
+        ),
+        _capture_submissions(tmp_path) as submitted,
+    ):
+        maybe_launch(
+            str(tmp_path / "src" / "process.py"),
+            _fanout_args(),
+            fan_out=["aa"],
+            fan_out_flag="--defs",
+        )
+
+    assert "--defs=aa,bb" not in submitted[0]
+    assert "--defs aa" in submitted[0]

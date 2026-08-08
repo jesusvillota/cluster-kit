@@ -398,6 +398,31 @@ def _slug(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-") or "x"
 
 
+def _strip_flag(argv: list[str], flag: str) -> list[str]:
+    """Remove ``flag`` and its value from a forwarded argument list.
+
+    The fan-out flag is normally already present in ``sys.argv`` (that is how
+    the caller learned the values in the first place). Each fan-out job appends
+    its own single value, so the original must come out or the script would see
+    the flag twice and silently use whichever argparse kept.
+
+    Handles both ``--flag value`` and ``--flag=value`` forms.
+    """
+    out: list[str] = []
+    skip_next = False
+    for token in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if token == flag:
+            skip_next = True
+            continue
+        if token.startswith(f"{flag}="):
+            continue
+        out.append(token)
+    return out
+
+
 def _derive_log_dir(script_path: str, project_root: Path) -> str:
     """Derive the SLURM log directory from the script path.
 
@@ -562,8 +587,9 @@ def _handle_cluster_submission(
     # know how to index into the value list. N plain jobs give the same
     # parallelism with none of that coupling.
     values = list(fan_out) if fan_out else [None]
+    base_args = _strip_flag(script_args, fan_out_flag) if fan_out else script_args
     for value in values:
-        job_args = list(script_args)
+        job_args = list(base_args)
         suffix = ""
         if value is not None:
             job_args += [fan_out_flag, value]
@@ -736,8 +762,9 @@ def _handle_pc_submission(
         return " ".join(shlex.quote(token) for token in tokens)
 
     # Same shape as the cluster path: one detached job per fan-out value.
+    base_args = _strip_flag(script_args, fan_out_flag) if fan_out else script_args
     for value in list(fan_out) if fan_out else [None]:
-        extra = list(script_args)
+        extra = list(base_args)
         suffix = ""
         if value is not None:
             extra += [fan_out_flag, value]
