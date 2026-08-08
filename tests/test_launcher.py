@@ -431,7 +431,7 @@ def test_local_fan_out_spawns_one_subprocess_per_value(tmp_path: Path) -> None:
     ):
         handled = maybe_launch(
             str(tmp_path / "src" / "process.py"),
-            _fanout_args(run_from="local", mode="array"),
+            _fanout_args(run_from="local"),
             fan_out=["aa", "bb"],
             fan_out_flag="--defs",
         )
@@ -457,7 +457,7 @@ def test_local_fan_out_exits_nonzero_when_a_child_fails(tmp_path: Path) -> None:
     ):
         maybe_launch(
             str(tmp_path / "src" / "process.py"),
-            _fanout_args(run_from="local", mode="array"),
+            _fanout_args(run_from="local"),
             fan_out=["aa", "bb"],
             fan_out_flag="--defs",
         )
@@ -479,9 +479,16 @@ def test_local_sequential_mode_runs_in_process(tmp_path: Path) -> None:
     popen.assert_not_called()
 
 
-def test_local_without_mode_flag_runs_in_process(tmp_path: Path) -> None:
-    """Scripts that never opted into --mode keep plain local behaviour."""
-    with patch("cluster_kit.launch.launcher.subprocess.Popen") as popen:
+def test_local_without_mode_flag_fans_out(tmp_path: Path) -> None:
+    """No --mode means the caller's explicit fan_out is honoured, not ignored."""
+    P, calls = _popen_stub([0, 0])
+    with (
+        patch("cluster_kit.launch.launcher.subprocess.Popen", P),
+        patch(
+            "cluster_kit.launch.launcher._strip_launcher_flags_from_argv",
+            return_value=[],
+        ),
+    ):
         handled = maybe_launch(
             str(tmp_path / "src" / "process.py"),
             _fanout_args(run_from="local"),
@@ -489,5 +496,31 @@ def test_local_without_mode_flag_runs_in_process(tmp_path: Path) -> None:
             fan_out_flag="--defs",
         )
 
-    assert handled is False
-    popen.assert_not_called()
+    assert handled is True
+    assert len(calls) == 2
+
+
+def test_sequential_mode_suppresses_fan_out_on_cluster(tmp_path: Path) -> None:
+    """--mode sequential means one job; the script loops over argv itself."""
+    with _capture_submissions(tmp_path) as submitted:
+        maybe_launch(
+            str(tmp_path / "src" / "process.py"),
+            _fanout_args(mode="sequential"),
+            fan_out=["aa", "bb", "cc"],
+            fan_out_flag="--defs",
+        )
+
+    assert len(submitted) == 1
+    assert "--job-name=process" in submitted[0]
+
+
+def test_array_mode_fans_out_on_cluster(tmp_path: Path) -> None:
+    with _capture_submissions(tmp_path) as submitted:
+        maybe_launch(
+            str(tmp_path / "src" / "process.py"),
+            _fanout_args(mode="array"),
+            fan_out=["aa", "bb", "cc"],
+            fan_out_flag="--defs",
+        )
+
+    assert len(submitted) == 3

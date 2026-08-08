@@ -226,6 +226,13 @@ def maybe_launch(
     if fan_out and not fan_out_flag:
         raise ValueError("fan_out requires fan_out_flag")
 
+    # A script that exposes --mode lets the user choose at run time; sequential
+    # means "one job, script loops over the values itself", which is what the
+    # values already in argv give us. Scripts without --mode always fan out
+    # when the caller passes fan_out, so asking for it is never a silent no-op.
+    if fan_out and getattr(args, "mode", None) == "sequential":
+        fan_out = None
+
     run_from: str = getattr(args, "run_from", "local")
 
     # -- Cluster submission (always handled by the launcher) --
@@ -246,9 +253,8 @@ def maybe_launch(
         return True
 
     # -- Local fan-out: one subprocess per value, run concurrently --
-    # Only when the caller explicitly asked to spread the work; a single value
-    # (or none) runs in-process so local debugging keeps a normal stack trace.
-    if fan_out and len(fan_out) > 1 and getattr(args, "mode", None) == "array":
+    # A single value runs in-process so local debugging keeps a normal stack.
+    if fan_out and len(fan_out) > 1:
         _run_local_fan_out(script_path, fan_out, fan_out_flag)
         return True
 
