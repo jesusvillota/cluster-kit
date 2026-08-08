@@ -73,7 +73,8 @@ jobs:
 
     assert plan.mode == "chain"
     assert len(plan.stages) == 1
-    assert plan.worker_script == "runnables/slurm/worker.slurm"
+    # Unset means the worker cluster-kit deploys, not a repo-local path.
+    assert plan.worker_script is None
     job = plan.stages[0].jobs[0]
     assert job.name == "First_job"
     assert job.partition == "cpu_long"
@@ -100,7 +101,8 @@ stages:
     plan = parse_workflow_file(workflow)
 
     assert plan.mode == "stages"
-    assert plan.worker_script == "runnables/slurm/worker.slurm"
+    # Unset means the worker cluster-kit deploys, not a repo-local path.
+    assert plan.worker_script is None
     assert plan.stages[0].name == "build"
     assert plan.stages[0].jobs[0].submit_command == "uv run src/build.py"
 
@@ -621,3 +623,49 @@ jobs:
         result = submit_workflow(workflow, dry_run=True)
 
     assert result == "dry-run"
+
+
+def test_workflow_builds_without_a_repo_local_worker(tmp_path: Path) -> None:
+    """A repo that deleted its worker must still build a plan.
+
+    The default used to be the literal legacy path, which made every workflow
+    look like an explicit override; the centralized-worker fallback then never
+    engaged and such repos could not run workflows at all.
+    """
+    workflow = _write_workflow(
+        tmp_path,
+        """
+name: no-worker
+sync: false
+
+jobs:
+  - command: |
+      uv run src/a.py --run-from cluster
+""",
+        worker=False,
+    )
+
+    exec_plan = _build(workflow)
+
+    argv = exec_plan["jobs"][0]["sbatch_argv"]
+    assert f"{REMOTE_BASE}/.cluster_kit/worker.slurm" in argv
+
+
+def test_explicit_worker_script_still_wins(tmp_path: Path) -> None:
+    workflow = _write_workflow(
+        tmp_path,
+        """
+name: custom
+worker_script: runnables/slurm/custom.slurm
+sync: false
+
+jobs:
+  - command: |
+      uv run src/a.py --run-from cluster
+""",
+    )
+    custom = tmp_path / "runnables" / "slurm" / "custom.slurm"
+    custom.write_text("#!/bin/bash\n")
+
+    argv = _build(workflow)["jobs"][0]["sbatch_argv"]
+    assert f"{REMOTE_BASE}/runnables/slurm/custom.slurm" in argv

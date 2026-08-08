@@ -87,7 +87,9 @@ class WorkflowPlan:
     mode: str
     dependency: str
     project_root: Path
-    worker_script: str
+    # None means "use the worker cluster-kit deploys"; a value is an explicit
+    # per-repo override.
+    worker_script: str | None
     sync: bool
     stages: tuple[WorkflowStage, ...]
     max_concurrent: int | None = None
@@ -119,10 +121,10 @@ def parse_workflow_file(path: Path | str) -> WorkflowPlan:
     else:
         project_root = project_root.resolve()
 
-    worker_script = _as_string(
-        raw.get("worker_script"),
-        "runnables/slurm/worker.slurm",
-    ).strip() or "runnables/slurm/worker.slurm"
+    # Unset means the centralized worker. Defaulting this to the legacy
+    # repo-local path made every workflow look like an explicit override, so
+    # the fallback never engaged and repos that deleted their worker broke.
+    worker_script = _as_string(raw.get("worker_script"), "").strip() or None
 
     sync = _as_bool(raw.get("sync"), True)
     max_concurrent = _as_optional_positive_int(
