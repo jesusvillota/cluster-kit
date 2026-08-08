@@ -25,8 +25,15 @@ from cluster_kit.config import (
 
 
 @pytest.fixture(autouse=True)
-def clean_env():
-    """Clear all CLUSTER_* env vars before and after each test."""
+def clean_env(tmp_path, monkeypatch):
+    """Isolate each test from ambient CLUSTER_* vars and from any real .env.
+
+    load_config() reads `.env` relative to the cwd, so running the suite from a
+    checkout that has one (this repo does) let real values override the
+    fixtures. Clearing os.environ is not enough — the file has to be out of
+    reach too.
+    """
+    monkeypatch.chdir(tmp_path)
     keys_to_clear = [
         k for k in os.environ if k.startswith("CLUSTER_")
     ]
