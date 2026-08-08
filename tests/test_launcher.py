@@ -5,11 +5,16 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from cluster_kit.launch.launcher import maybe_launch, submit_command
+from cluster_kit.launch.launcher import (
+    add_launcher_args,
+    maybe_launch,
+    submit_command,
+)
 
 
 def test_submit_command_uses_project_worker_script(tmp_path: Path) -> None:
@@ -229,3 +234,123 @@ def test_submission_does_not_hardcode_a_conda_env(tmp_path: Path) -> None:
 
     assert "conda_envs/cluster-kit" not in submitted[0]
     assert "--wrap" not in submitted[0]
+
+
+# ---------------------------------------------------------------------------
+# maybe_launch: PC (detached, non-SLURM) submission
+# ---------------------------------------------------------------------------
+
+
+class _FakePCConfig:
+    host = "pc"
+    remote_base = "/home/u/proj"
+    executor = "ssh"
+
+
+@contextmanager
+def _capture_pc(tmp_path: Path, executor: str = "ssh"):
+    """Stub the PC submission chain, collecting (command, name) per job."""
+    cfg = _FakePCConfig()
+    cfg.executor = executor
+    submitted: list[tuple[str, str]] = []
+
+    handle = SimpleNamespace(job_id="j1", log_path="/home/u/proj/log")
+
+    with (
+        patch("cluster_kit.launch.launcher._load_pc_config", return_value=cfg),
+        patch("cluster_kit.launch.launcher._find_project_root", return_value=tmp_path),
+        patch(
+            "cluster_kit.launch.launcher._confirm_and_prepare_pc_submission",
+            return_value=False,
+        ),
+        patch(
+            "cluster_kit.launch.launcher._strip_launcher_flags_from_argv",
+            return_value=["--years", "2020"],
+        ),
+        patch("cluster_kit.utils.ssh.ensure_reachable"),
+        patch(
+            "cluster_kit.jobs.submit",
+            side_effect=lambda cmd, name, config: submitted.append((cmd, name))
+            or handle,
+        ),
+    ):
+        yield submitted
+
+
+def test_pc_submission_is_handled(tmp_path: Path) -> None:
+    with _capture_pc(tmp_path) as submitted:
+        handled = maybe_launch(
+            str(tmp_path / "src" / "process.py"), _fanout_args(run_from="pc")
+        )
+
+    assert handled is True
+    assert len(submitted) == 1
+    command, name = submitted[0]
+    assert command.startswith("uv run python src/process.py")
+    assert name == "process"
+
+
+def test_pc_submission_fans_out(tmp_path: Path) -> None:
+    """Fan-out has the same shape on the PC as on the cluster."""
+    with _capture_pc(tmp_path) as submitted:
+        maybe_launch(
+            str(tmp_path / "src" / "process.py"),
+            _fanout_args(run_from="pc"),
+            fan_out=["aa", "bb"],
+            fan_out_flag="--defs",
+        )
+
+    assert [name for _, name in submitted] == ["process_aa", "process_bb"]
+    assert "--defs aa" in submitted[0][0]
+    assert "--defs bb" in submitted[1][0]
+
+
+def test_pc_submission_ignores_slurm_flags(tmp_path: Path) -> None:
+    with _capture_pc(tmp_path) as submitted:
+        maybe_launch(
+            str(tmp_path / "src" / "process.py"), _fanout_args(run_from="pc")
+        )
+
+    command = submitted[0][0]
+    for flag in ("--partition", "--slurm-cpus", "--slurm-mem", "sbatch"):
+        assert flag not in command
+
+
+def test_pc_aborts_when_git_sync_declined(tmp_path: Path) -> None:
+    cfg = _FakePCConfig()
+    with (
+        patch("cluster_kit.launch.launcher._load_pc_config", return_value=cfg),
+        patch("cluster_kit.launch.launcher._find_project_root", return_value=tmp_path),
+        patch(
+            "cluster_kit.launch.launcher._confirm_and_prepare_pc_submission",
+            return_value=True,
+        ),
+        patch("cluster_kit.utils.ssh.ensure_reachable"),
+        patch("cluster_kit.jobs.submit") as submit_job,
+    ):
+        handled = maybe_launch(
+            str(tmp_path / "src" / "process.py"), _fanout_args(run_from="pc")
+        )
+
+    assert handled is True
+    submit_job.assert_not_called()
+
+
+def test_pc_profile_must_use_ssh_executor(tmp_path: Path) -> None:
+    """A non-ssh PC profile is a config error, not a silent SLURM fallback."""
+    from cluster_kit.launch.launcher import _load_pc_config
+
+    cfg = _FakePCConfig()
+    cfg.executor = "slurm"
+    with (
+        patch("cluster_kit.config.load_config", return_value=cfg),
+        patch("cluster_kit.config.validate_config_strict"),
+        pytest.raises(SystemExit),
+    ):
+        _load_pc_config(tmp_path)
+
+
+def test_run_from_pc_is_an_accepted_choice() -> None:
+    parser = argparse.ArgumentParser()
+    add_launcher_args(parser)
+    assert parser.parse_args(["--run-from", "pc"]).run_from == "pc"

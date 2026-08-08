@@ -130,9 +130,13 @@ def add_launcher_args(
     group = parser.add_argument_group("Launcher (SLURM integration)")
     group.add_argument(
         "--run-from",
-        choices=["local", "cluster"],
+        choices=["local", "cluster", "pc"],
         default="local",
-        help="Run locally or submit to SLURM cluster (default: local).",
+        help=(
+            "Run locally, submit to the SLURM cluster, or run as a detached "
+            "job on a plain remote machine via the CLUSTER_PC_* profile "
+            "(default: local)."
+        ),
     )
     if array_mode:
         group.add_argument(
@@ -231,6 +235,13 @@ def maybe_launch(
             return True
         _handle_cluster_submission(
             script_path, args, env_vars, fan_out=fan_out, fan_out_flag=fan_out_flag
+        )
+        return True
+
+    # -- Detached submission on a plain remote machine (no SLURM) --
+    if run_from == "pc":
+        _handle_pc_submission(
+            script_path, args, fan_out=fan_out, fan_out_flag=fan_out_flag
         )
         return True
 
@@ -574,6 +585,164 @@ def _handle_cluster_submission(
             mail_user,
             project_root,
         )
+
+
+# ---------------------------------------------------------------------------
+# Internal: PC (plain remote machine) submission
+# ---------------------------------------------------------------------------
+
+
+def _load_pc_config(project_root: Path):
+    """Load and validate the ``CLUSTER_PC_*`` profile.
+
+    Returns:
+        The validated :class:`~cluster_kit.config.ClusterConfig` for the profile.
+
+    Raises:
+        SystemExit: If the profile is missing, invalid, or not ssh-backed.
+    """
+    from cluster_kit.config import ConfigError, load_config, validate_config_strict
+
+    try:
+        config = load_config(env_file=project_root / ".env", env_profile="pc")
+        validate_config_strict(config)
+    except ConfigError as exc:
+        _console.print(
+            f"[red]PC profile config error:[/red] {exc}\n"
+            "Add a CLUSTER_PC_* block to .env (see docs/pc-ssh-setup.md)."
+        )
+        sys.exit(1)
+
+    if config.executor != "ssh":
+        _console.print(
+            "[red]--run-from pc requires CLUSTER_PC_EXECUTOR=ssh in .env[/red]"
+        )
+        sys.exit(1)
+    return config
+
+
+def _confirm_and_prepare_pc_submission(config, project_root: Path) -> bool:
+    """Git-sync the remote checkout before submitting.
+
+    Returns:
+        True if submission should be aborted.
+    """
+    from rich.prompt import Prompt
+
+    from cluster_kit.sync.git_sync import GitSyncer
+
+    if not _is_interactive_terminal():
+        _console.print("  [dim]Non-interactive PC submission; skipping git sync[/dim]")
+        return False
+
+    try:
+        answer = Prompt.ask(
+            (
+                "[cyan]Git-sync the PC checkout before submission?[/cyan]\n"
+                "[green]yes[/green] = commit/push prompt + PC pull, then submit; "
+                "[yellow]no[/yellow] = submit against the PC's current checkout"
+            ),
+            choices=["yes", "no"],
+            show_choices=True,
+        )
+    except (KeyboardInterrupt, EOFError):
+        _console.print("  [yellow]PC sync cancelled; aborting submission[/yellow]")
+        return True
+
+    if answer == "no":
+        _console.print(
+            "  [yellow]PC sync declined; submitting against the PC's "
+            "current checkout[/yellow]"
+        )
+        return False
+
+    if not GitSyncer(config=config, project_root=project_root).sync():
+        _console.print("  [red]PC git sync failed; aborting submission[/red]")
+        return True
+    return False
+
+
+def _submit_pc_job(command: str, name: str, config) -> bool:
+    """Submit one detached job on the PC."""
+    from cluster_kit.jobs import JobError, submit
+
+    try:
+        handle = submit(command, name=name, config=config)
+    except JobError as exc:
+        _console.print(f"  [red]PC submission failed:[/red] {exc}")
+        return False
+
+    _console.print(
+        f"  [green][OK][/green] Detached job [bold]{handle.job_id}[/bold] submitted\n"
+        f"  [cyan]Log:[/cyan] {handle.log_path}\n"
+        f"  Check with: [bold]uv run cluster-kit -p pc job status "
+        f"{handle.job_id}[/bold]"
+    )
+    return True
+
+
+def _handle_pc_submission(
+    script_path: str,
+    args: argparse.Namespace,
+    *,
+    fan_out: Sequence[str] | None = None,
+    fan_out_flag: str | None = None,
+) -> None:
+    """Submit detached job(s) on the PC via the ssh executor.
+
+    SLURM resource flags are meaningless here and are ignored.
+    """
+    from cluster_kit.utils.ssh import RemoteUnreachableError, ensure_reachable
+
+    project_root = _find_project_root(script_path)
+    config = _load_pc_config(project_root)
+
+    try:
+        ensure_reachable(config=config)
+    except RemoteUnreachableError as exc:
+        _console.print(f"  [red]{exc}[/red]")
+        sys.exit(1)
+
+    if _confirm_and_prepare_pc_submission(config, project_root):
+        return
+
+    abs_script = Path(script_path).resolve()
+    try:
+        rel_script = str(abs_script.relative_to(project_root))
+    except ValueError:
+        rel_script = str(abs_script)
+
+    job_name = _derive_job_name(script_path)
+    script_args = _strip_launcher_flags_from_argv()
+
+    _console.print(
+        Panel(
+            (
+                f"[cyan]Host:[/cyan]      {config.host}\n"
+                f"[cyan]Remote:[/cyan]    {config.remote_base}\n"
+                f"[cyan]Job name:[/cyan]  {job_name}\n"
+                f"[cyan]Fan-out:[/cyan]   "
+                f"{', '.join(fan_out) if fan_out else '-'}\n"
+                "[dim]SLURM resource flags are ignored on the PC[/dim]"
+            ),
+            title="[bold]PC Submission (detached)",
+            border_style="cyan",
+            box=box.ROUNDED,
+        )
+    )
+
+    def _command(extra: list[str]) -> str:
+        tokens = ["uv", "run", "python", rel_script, *extra]
+        return " ".join(shlex.quote(token) for token in tokens)
+
+    # Same shape as the cluster path: one detached job per fan-out value.
+    for value in list(fan_out) if fan_out else [None]:
+        extra = list(script_args)
+        suffix = ""
+        if value is not None:
+            extra += [fan_out_flag, value]
+            suffix = f"_{_slug(value)}"
+        _submit_pc_job(_command(extra), f"{job_name}{suffix}", config)
 
 
 def _build_sbatch_base(
