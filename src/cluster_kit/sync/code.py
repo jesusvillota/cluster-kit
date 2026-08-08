@@ -286,7 +286,20 @@ class CodeDeployer:
     # machine-local files (.env, THIS_IS.py, data/) are provisioned by hand and
     # never synced.  Logs and run state stay per-worktree so it is obvious
     # whose job is whose.
-    UNSHARED = ("_logs_", ".cluster_kit", ".git")
+    # Never symlinked from the canonical base into a worktree deployment.
+    # pyproject.toml/uv.lock are synced per worktree (a branch may change
+    # dependencies), and .venv is built from them, so sharing any of the three
+    # would let one worktree's rsync write through a symlink onto the shared
+    # deployment.
+    UNSHARED = (
+        "_logs_",
+        ".cluster_kit",
+        ".git",
+        ".venv",
+        "pyproject.toml",
+        "uv.lock",
+        ".python-version",
+    )
 
     # Transient droppings at the canonical root that should not be mirrored into
     # every worktree deployment.  Without these a real base accumulated 22 junk
@@ -384,6 +397,47 @@ class CodeDeployer:
                 return False
 
         console.print("\n[green][OK][/green] Remote directories cleaned\n")
+        return True
+
+    # Project metadata a uv-based deployment needs in order to resolve its own
+    # environment. Hand-placing these is how remote venvs drift out of step
+    # with the lockfile they were built from.
+    PROJECT_FILES = ("pyproject.toml", "uv.lock", ".python-version")
+
+    def sync_project_files(self) -> bool:
+        """Copy project metadata files to the remote base.
+
+        Skips any that do not exist locally. Only files, so this stays outside
+        the rsync --delete of :attr:`directories`.
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        present = [f for f in self.PROJECT_FILES if (self._local_base / f).is_file()]
+        if not present:
+            return True
+
+        console.print(f"[cyan]Syncing project files[/cyan] {', '.join(present)}")
+        for name in present:
+            try:
+                result = subprocess.run(
+                    [
+                        "scp",
+                        "-q",
+                        str(self._local_base / name),
+                        f"{self._ssh_host}:{self._remote_base}/{name}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+            except Exception as e:
+                show_error_panel(f"Error syncing {name}", str(e))
+                return False
+            if result.returncode != 0:
+                show_error_panel(f"Failed to sync {name}", result.stderr)
+                return False
+
+        console.print("[green][OK][/green] Project files synced\n")
         return True
 
     def provision_remote_worker(self) -> bool:
@@ -640,7 +694,11 @@ class CodeDeployer:
         if not self.sync_directories():
             return False
 
-        # Step 6: Deploy cluster-kit's own worker.slurm
+        # Step 6: Project metadata (pyproject.toml / uv.lock) for uv deployments
+        if not self.sync_project_files():
+            return False
+
+        # Step 7: Deploy cluster-kit's own worker.slurm
         if not self.provision_remote_worker():
             return False
 

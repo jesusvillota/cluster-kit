@@ -108,6 +108,11 @@ class TestProvisionRemoteClusterKit:
             ),
             patch.object(
                 CodeDeployer,
+                "sync_project_files",
+                lambda self: calls.append("projfiles") or True,
+            ),
+            patch.object(
+                CodeDeployer,
                 "provision_remote_worker",
                 lambda self: calls.append("worker") or True,
             ),
@@ -129,6 +134,7 @@ class TestProvisionRemoteClusterKit:
             "base",
             "remove",
             "sync",
+            "projfiles",
             "worker",
             "provision",
             "verify",
@@ -206,3 +212,59 @@ class TestProvisionRemoteBase:
         bad = SimpleNamespace(returncode=1, stdout="", stderr="permission denied")
         with patch.object(sync_code_mod.subprocess, "run", return_value=bad):
             assert deployer.provision_remote_base() is False
+
+
+class TestProjectFiles:
+    def test_uv_metadata_is_never_shared_between_worktrees(
+        self, deployer, monkeypatch, tmp_path
+    ):
+        """A shared pyproject/uv.lock/.venv would let one worktree's rsync
+        write through the symlink onto the canonical deployment."""
+        canonical = tmp_path / "project"
+        canonical.mkdir()
+        for name in ("pyproject.toml", "uv.lock", ".python-version"):
+            (canonical / name).write_text("x\n")
+        (canonical / ".venv").mkdir()
+        (canonical / "output").mkdir()
+        base = tmp_path / "project__wt"
+
+        monkeypatch.setattr(
+            sync_code_mod, "get_canonical_remote_base", lambda: str(canonical)
+        )
+        deployer._remote_base = str(base)
+
+        real_run = subprocess.run
+        with patch.object(
+            sync_code_mod.subprocess,
+            "run",
+            side_effect=lambda argv, **kw: real_run(
+                ["sh", "-c", argv[2]], capture_output=True, text=True
+            ),
+        ):
+            assert deployer.provision_remote_base() is True
+
+        for name in ("pyproject.toml", "uv.lock", ".python-version", ".venv"):
+            assert not (base / name).exists(), f"{name} must not be shared"
+        # Genuinely shared state is unaffected.
+        assert (base / "output").is_symlink()
+
+    def test_syncs_only_files_that_exist(self, deployer, tmp_path):
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        (tmp_path / "uv.lock").write_text("version = 1\n")
+        ok = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with patch.object(sync_code_mod.subprocess, "run", return_value=ok) as run:
+            assert deployer.sync_project_files() is True
+
+        copied = [c[0][0][-2].split("/")[-1] for c in run.call_args_list]
+        assert copied == ["pyproject.toml", "uv.lock"]  # no .python-version
+
+    def test_noop_when_project_has_none(self, deployer):
+        with patch.object(sync_code_mod.subprocess, "run") as run:
+            assert deployer.sync_project_files() is True
+        run.assert_not_called()
+
+    def test_returns_false_when_copy_fails(self, deployer, tmp_path):
+        (tmp_path / "pyproject.toml").write_text("[project]\n")
+        bad = SimpleNamespace(returncode=1, stdout="", stderr="denied")
+        with patch.object(sync_code_mod.subprocess, "run", return_value=bad):
+            assert deployer.sync_project_files() is False
