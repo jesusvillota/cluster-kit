@@ -245,6 +245,13 @@ def maybe_launch(
         )
         return True
 
+    # -- Local fan-out: one subprocess per value, run concurrently --
+    # Only when the caller explicitly asked to spread the work; a single value
+    # (or none) runs in-process so local debugging keeps a normal stack trace.
+    if fan_out and len(fan_out) > 1 and getattr(args, "mode", None) == "array":
+        _run_local_fan_out(script_path, fan_out, fan_out_flag)
+        return True
+
     # -- Local execution: let the script handle it normally --
     return False
 
@@ -611,6 +618,71 @@ def _handle_cluster_submission(
             mail_user,
             project_root,
         )
+
+
+# ---------------------------------------------------------------------------
+# Internal: local fan-out
+# ---------------------------------------------------------------------------
+
+
+def _run_local_fan_out(
+    script_path: str,
+    fan_out: Sequence[str],
+    fan_out_flag: str,
+) -> None:
+    """Run one subprocess per fan-out value locally, concurrently.
+
+    The local counterpart of the cluster/PC fan-out: same one-job-per-value
+    shape, without a scheduler. Each child is re-invoked with a single value and
+    ``--mode sequential`` so it does not fan out again.
+
+    Raises:
+        SystemExit: With code 1 if any subprocess fails, so callers and CI see
+            the failure rather than a zero exit with errors buried in the log.
+    """
+    script_args = _strip_flag(_strip_launcher_flags_from_argv(), fan_out_flag)
+
+    _console.print(
+        Panel(
+            f"Spawning [bold]{len(fan_out)}[/bold] parallel subprocesses: "
+            f"[cyan]{', '.join(fan_out)}[/cyan]",
+            title="[bold]Local Parallel Execution",
+            border_style="cyan",
+            box=box.ROUNDED,
+        )
+    )
+
+    processes: list[tuple[str, subprocess.Popen]] = []
+    for value in fan_out:
+        cmd = [
+            sys.executable,
+            script_path,
+            fan_out_flag,
+            value,
+            "--run-from",
+            "local",
+            "--mode",
+            "sequential",
+            *script_args,
+        ]
+        _console.print(f"  Spawning subprocess for [cyan]{value}[/cyan]")
+        processes.append((value, subprocess.Popen(cmd)))
+
+    failed = []
+    for value, proc in processes:
+        if proc.wait() != 0:
+            failed.append(value)
+            _console.print(
+                f"  [red][FAIL][/red] {value} exited with code {proc.returncode}"
+            )
+        else:
+            _console.print(f"  [green][OK][/green] {value} completed")
+
+    if failed:
+        _console.print(
+            f"\n[red]Failed ({len(failed)}/{len(fan_out)}):[/red] {', '.join(failed)}"
+        )
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------

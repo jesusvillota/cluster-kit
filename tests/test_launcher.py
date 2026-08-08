@@ -397,3 +397,97 @@ def test_fan_out_flag_equals_form_also_stripped(tmp_path: Path) -> None:
 
     assert "--defs=aa,bb" not in submitted[0]
     assert "--defs aa" in submitted[0]
+
+
+# ---------------------------------------------------------------------------
+# maybe_launch: local fan-out
+# ---------------------------------------------------------------------------
+
+
+def _popen_stub(returncodes):
+    """Popen replacement returning canned exit codes in order."""
+    calls = []
+    codes = list(returncodes)
+
+    class _P:
+        def __init__(self, cmd):
+            calls.append(cmd)
+            self.returncode = codes.pop(0)
+
+        def wait(self):
+            return self.returncode
+
+    return _P, calls
+
+
+def test_local_fan_out_spawns_one_subprocess_per_value(tmp_path: Path) -> None:
+    P, calls = _popen_stub([0, 0])
+    with (
+        patch("cluster_kit.launch.launcher.subprocess.Popen", P),
+        patch(
+            "cluster_kit.launch.launcher._strip_launcher_flags_from_argv",
+            return_value=["--years", "2020"],
+        ),
+    ):
+        handled = maybe_launch(
+            str(tmp_path / "src" / "process.py"),
+            _fanout_args(run_from="local", mode="array"),
+            fan_out=["aa", "bb"],
+            fan_out_flag="--defs",
+        )
+
+    assert handled is True
+    assert len(calls) == 2
+    for value, cmd in zip(["aa", "bb"], calls):
+        assert "--defs" in cmd and value in cmd
+        # Children must not fan out again.
+        assert cmd[cmd.index("--mode") + 1] == "sequential"
+        assert cmd[cmd.index("--run-from") + 1] == "local"
+
+
+def test_local_fan_out_exits_nonzero_when_a_child_fails(tmp_path: Path) -> None:
+    P, _ = _popen_stub([0, 1])
+    with (
+        patch("cluster_kit.launch.launcher.subprocess.Popen", P),
+        patch(
+            "cluster_kit.launch.launcher._strip_launcher_flags_from_argv",
+            return_value=[],
+        ),
+        pytest.raises(SystemExit) as exc,
+    ):
+        maybe_launch(
+            str(tmp_path / "src" / "process.py"),
+            _fanout_args(run_from="local", mode="array"),
+            fan_out=["aa", "bb"],
+            fan_out_flag="--defs",
+        )
+
+    assert exc.value.code == 1
+
+
+def test_local_sequential_mode_runs_in_process(tmp_path: Path) -> None:
+    """Sequential is the default: the script handles its own definitions."""
+    with patch("cluster_kit.launch.launcher.subprocess.Popen") as popen:
+        handled = maybe_launch(
+            str(tmp_path / "src" / "process.py"),
+            _fanout_args(run_from="local", mode="sequential"),
+            fan_out=["aa", "bb"],
+            fan_out_flag="--defs",
+        )
+
+    assert handled is False
+    popen.assert_not_called()
+
+
+def test_local_without_mode_flag_runs_in_process(tmp_path: Path) -> None:
+    """Scripts that never opted into --mode keep plain local behaviour."""
+    with patch("cluster_kit.launch.launcher.subprocess.Popen") as popen:
+        handled = maybe_launch(
+            str(tmp_path / "src" / "process.py"),
+            _fanout_args(run_from="local"),
+            fan_out=["aa", "bb"],
+            fan_out_flag="--defs",
+        )
+
+    assert handled is False
+    popen.assert_not_called()
