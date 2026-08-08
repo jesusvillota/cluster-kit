@@ -524,3 +524,98 @@ def test_array_mode_fans_out_on_cluster(tmp_path: Path) -> None:
         )
 
     assert len(submitted) == 3
+
+
+# ---------------------------------------------------------------------------
+# Pre-submit sync guard
+#
+# Ported from whales, whose wrapper owned this flow before it moved upstream.
+# ---------------------------------------------------------------------------
+
+
+@contextmanager
+def _guard(interactive=True, answer="yes", sync_ok=True, sync_exc=None):
+    from cluster_kit.launch import launcher as L
+
+    prompt = patch("rich.prompt.Prompt.ask", return_value=answer)
+    if isinstance(answer, BaseException) or (
+        isinstance(answer, type) and issubclass(answer, BaseException)
+    ):
+        prompt = patch("rich.prompt.Prompt.ask", side_effect=answer)
+
+    sync = (
+        patch.object(L, "_run_cluster_sync", side_effect=sync_exc)
+        if sync_exc
+        else patch.object(L, "_run_cluster_sync", return_value=sync_ok)
+    )
+    with (
+        patch.object(L, "_is_interactive_terminal", return_value=interactive),
+        prompt,
+        sync as sync_mock,
+    ):
+        yield sync_mock
+
+
+def _abort(**kw) -> tuple[bool, object]:
+    from cluster_kit.launch.launcher import _confirm_and_prepare_cluster_submission
+
+    with _guard(**kw) as sync_mock:
+        return _confirm_and_prepare_cluster_submission(Path("/proj")), sync_mock
+
+
+def test_sync_guard_syncs_then_submits_when_accepted() -> None:
+    aborted, sync_mock = _abort(answer="yes")
+    assert aborted is False
+    sync_mock.assert_called_once()
+
+
+def test_sync_guard_declines_and_still_submits() -> None:
+    aborted, sync_mock = _abort(answer="no")
+    assert aborted is False
+    sync_mock.assert_not_called()
+
+
+def test_sync_guard_aborts_when_sync_fails() -> None:
+    """A failed sync must stop submission, not run stale code on the cluster."""
+    aborted, _ = _abort(answer="yes", sync_ok=False)
+    assert aborted is True
+
+
+def test_sync_guard_interrupt_aborts_without_falling_through() -> None:
+    aborted, sync_mock = _abort(answer=KeyboardInterrupt)
+    assert aborted is True
+    sync_mock.assert_not_called()
+
+
+def test_sync_guard_eof_aborts_without_falling_through() -> None:
+    aborted, _ = _abort(answer=EOFError)
+    assert aborted is True
+
+
+def test_sync_guard_non_interactive_skips_prompt_and_proceeds() -> None:
+    aborted, sync_mock = _abort(interactive=False)
+    assert aborted is False
+    sync_mock.assert_not_called()
+
+
+def test_sync_runs_before_remote_log_dir_creation(tmp_path: Path) -> None:
+    """Ordering matters: the log dir must not be made against an unsynced tree."""
+    order: list[str] = []
+    from cluster_kit.launch import launcher as L
+
+    with (
+        patch.object(L, "get_remote_base", return_value="/remote/proj"),
+        patch.object(L, "get_texlive_root", return_value=""),
+        patch.object(L, "_find_project_root", return_value=tmp_path),
+        patch.object(
+            L,
+            "_confirm_and_prepare_cluster_submission",
+            side_effect=lambda root: order.append("sync") or False,
+        ),
+        patch.object(L, "_ssh_run", side_effect=lambda cmd: order.append("mkdir")),
+        patch.object(L, "_ssh_submit", side_effect=lambda cmd: order.append("submit")),
+        patch.object(L, "_strip_launcher_flags_from_argv", return_value=[]),
+    ):
+        maybe_launch(str(tmp_path / "src" / "p.py"), _fanout_args())
+
+    assert order == ["sync", "mkdir", "submit"]
