@@ -176,6 +176,10 @@ def test_afterany_unblocks_on_failure(slurm: FakeSlurm, tmp_path: Path) -> None:
 
 
 def test_throttle_counts_all_user_jobs(slurm: FakeSlurm, tmp_path: Path) -> None:
+    # max_concurrent (4, the plan default) happens to equal the account cap
+    # (also 4 by default) here, so this exercises the coincidental case
+    # where both limits bind identically -- see the *_workflow_limit_* and
+    # *_account_limit_* tests below for the two limits pulling apart.
     plan = make_plan([[], [], [], [], [], []])  # 6 independent jobs
     slurm.queue.update({"888", "999"})  # manually submitted jobs share the budget
 
@@ -195,6 +199,39 @@ def test_throttle_counts_all_user_jobs(slurm: FakeSlurm, tmp_path: Path) -> None
 def test_no_submission_when_queue_at_limit(slurm: FakeSlurm, tmp_path: Path) -> None:
     plan = make_plan([[]])
     slurm.queue.update({"1", "2", "3", "4"})
+
+    state, _, ex = _slurm_setup(plan, tmp_path)
+    orch.run_cycle(plan, state, ex)
+
+    assert slurm.submitted_argvs == []
+    assert _job(state, 0)["state"] == orch.WAITING
+
+
+def test_workflow_limit_does_not_count_foreign_jobs(
+    slurm: FakeSlurm, tmp_path: Path
+) -> None:
+    """Regression test: a tight max_concurrent must not be starved by
+    unrelated jobs already in the user's squeue (the reported bug)."""
+    plan = make_plan([[], []], max_concurrent=1)  # 2 independent jobs
+    slurm.queue.update({"888", "999"})  # unrelated jobs, well under the account cap
+
+    state, _, ex = _slurm_setup(plan, tmp_path)
+    orch.run_cycle(plan, state, ex)
+    # workflow_budget = 1 - 0 = 1, account_budget = 4 - 2 = 2 -> submits 1
+    assert len(slurm.submitted_argvs) == 1
+
+    orch.run_cycle(plan, state, ex)
+    # workflow_budget = 1 - 1 = 0 -> still capped at 1, even with account room
+    assert len(slurm.submitted_argvs) == 1
+
+
+def test_account_limit_still_blocks_with_workflow_room(
+    slurm: FakeSlurm, tmp_path: Path
+) -> None:
+    """Even with workflow max_concurrent wide open, the fixed account cap
+    must still block once foreign jobs fill the squeue."""
+    plan = make_plan([[]], max_concurrent=10)
+    slurm.queue.update({"1", "2", "3", "4"})  # foreign jobs alone hit the account cap
 
     state, _, ex = _slurm_setup(plan, tmp_path)
     orch.run_cycle(plan, state, ex)

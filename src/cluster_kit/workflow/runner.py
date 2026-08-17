@@ -4,10 +4,12 @@ Workflows are executed by a detached orchestrator on the cluster login node:
 ``submit_workflow`` pre-renders every job's sbatch argv into a JSON execution
 plan, uploads it together with ``orchestrator.py``, and launches the daemon
 via nohup. The orchestrator submits each job once its dependencies have
-completed, keeping the user's total queued job count below ``max_concurrent``
-(default 4, the association MaxSubmit limit). Jobs within a parallel stage
-depend on the previous stage; jobs within a sequential stage
-(``parallel: false``) are chained one at a time.
+completed, subject to two independent limits: ``max_concurrent`` caps how
+many of *this workflow's own* jobs are queued at once (default 4), while the
+account-wide SLURM MaxSubmit/MaxJobs limit is enforced separately against the
+user's entire queue. Jobs within a parallel stage depend on the previous
+stage; jobs within a sequential stage (``parallel: false``) are chained one
+at a time.
 """
 
 from __future__ import annotations
@@ -444,7 +446,7 @@ def _render_plan(
         f"[cyan]Sync:[/cyan] {'no' if dry_run else plan.sync}  "
         f"[cyan]Project:[/cyan] {plan.project_root}\n"
         f"{worker_line}  "
-        f"[cyan]Max concurrent:[/cyan] {exec_plan['max_concurrent']}  "
+        f"[cyan]Workflow max concurrent:[/cyan] {exec_plan['max_concurrent']}  "
         f"[cyan]Poll:[/cyan] {exec_plan['poll_interval']}s\n"
         f"[cyan]Run dir:[/cyan] "
         f"{exec_plan['remote_base']}/.cluster_kit/workflows/{exec_plan['run_id']}"

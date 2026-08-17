@@ -219,11 +219,14 @@ Launch a YAML-defined sequence of raw `uv run` commands as SLURM jobs. Cluster
 Kit pre-renders every job's sbatch command into an execution plan, uploads it to
 the cluster, and starts a detached orchestrator on the login node, so your local
 machine does not need to poll or stay connected. The orchestrator submits each
-job once its dependencies have completed, keeping the user's total queued job
-count (pending + running, including jobs submitted outside the workflow) below
-`max_concurrent` — so workflows with many more jobs than the association
-MaxSubmit/MaxJobs limit run end to end without `AssocMaxSubmitJobLimit` errors.
-TOML is still supported, but YAML is the recommended format.
+job once its dependencies have completed, enforcing two independent budgets:
+at most `max_concurrent` of *this workflow's own* jobs queued at once (a
+per-workflow dial you set), and — separately, always — at most the account's
+fixed SLURM MaxSubmit/MaxJobs limit across the user's *entire* squeue
+(default 4, override with `$CLUSTER_ACCOUNT_MAX_JOBS`), so workflows never
+hit `AssocMaxSubmitJobLimit` errors no matter how many other workflows or
+manually-submitted jobs share the queue. TOML is still supported, but YAML is
+the recommended format.
 
 ```bash
 cluster-kit workflow run abnormal-volume.yaml
@@ -252,7 +255,7 @@ define `stages:`, the workflow runs in stages mode.
 name: abnormal-volume
 dependency: afterok
 sync: true
-max_concurrent: 4   # optional: max queued jobs at any time (default 4)
+max_concurrent: 4   # optional: max of THIS workflow's own jobs queued at once (default 4)
 poll_interval: 30   # optional: orchestrator poll cadence in seconds
 
 stages:

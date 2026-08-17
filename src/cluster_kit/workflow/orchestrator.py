@@ -5,10 +5,12 @@ Executes a JSON execution plan produced by ``cluster_kit.workflow.plan``.
 Two execution backends share the same scheduling loop:
 
 - slurm: submits each job's pre-rendered sbatch argv on the login node once
-  its dependencies have completed, keeping the user's TOTAL queued job count
-  (pending + running, including jobs submitted outside this run) below
-  ``max_concurrent`` so the association MaxSubmit/MaxJobs limit is never
-  violated.
+  its dependencies have completed, enforcing two independent budgets: at
+  most ``max_concurrent`` of THIS RUN's own jobs SUBMITTED at once (a
+  per-workflow dial), and at most ``ACCOUNT_MAX_CONCURRENT`` jobs total in
+  the user's squeue (this run plus every other workflow/manual job), which
+  is the fixed, exogenous association MaxSubmit/MaxJobs limit. A submission
+  proceeds only when both budgets have room.
 - ssh: runs on the remote machine itself and spawns each job as a detached
   local process group, tracking completion through per-job rc files so a
   crashed orchestrator can resume from ``state.json``.
@@ -62,6 +64,27 @@ SACCT_FAILURE_STATES = {
 
 MAX_SUBMIT_RETRIES = 3
 MAX_MISSING_POLLS = 5
+
+# Exogenous SLURM association limit (MaxSubmit/MaxJobs), shared across every
+# workflow and manually-submitted job for this user. Not a workflow YAML
+# knob -- distinct from the per-workflow ``max_concurrent``.
+DEFAULT_ACCOUNT_MAX_CONCURRENT = 4
+ACCOUNT_MAX_CONCURRENT_ENV_VAR = "CLUSTER_ACCOUNT_MAX_JOBS"
+
+
+def _account_max_concurrent():
+    env_value = os.getenv(ACCOUNT_MAX_CONCURRENT_ENV_VAR)
+    if env_value:
+        try:
+            return int(env_value)
+        except ValueError:
+            _log(
+                "WARNING: ignoring invalid {0}={1!r}".format(
+                    ACCOUNT_MAX_CONCURRENT_ENV_VAR, env_value
+                )
+            )
+    return DEFAULT_ACCOUNT_MAX_CONCURRENT
+
 
 _terminate_requested = False
 
@@ -211,6 +234,7 @@ class SlurmExec:
         self.user = plan["user"]
         self.remote_base = plan["remote_base"]
         self.max_concurrent = plan["max_concurrent"]
+        self.account_max_concurrent = _account_max_concurrent()
         self._squeue_ids = None
 
     def refresh(self, state):
@@ -265,10 +289,21 @@ class SlurmExec:
                 )
 
     def budget(self, state):
-        """Free submission slots; None when the queue state is unknown."""
+        """Free submission slots; None when the queue state is unknown.
+
+        Two independent limits, both must have room: at most
+        ``max_concurrent`` of THIS run's own jobs (workflow-scoped), and at
+        most ``account_max_concurrent`` jobs total in the user's squeue
+        (the fixed association limit, shared with every other job).
+        """
         if self._squeue_ids is None:
             return None
-        return self.max_concurrent - len(self._squeue_ids)
+        workflow_submitted = sum(
+            1 for job in state["jobs"] if job["state"] == SUBMITTED
+        )
+        workflow_budget = self.max_concurrent - workflow_submitted
+        account_budget = self.account_max_concurrent - len(self._squeue_ids)
+        return min(workflow_budget, account_budget)
 
     def submit(self, job, plan_job):
         """Submit one job. Returns 'ok', 'limit' (retry next cycle), or 'error'."""
