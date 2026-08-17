@@ -1194,8 +1194,11 @@ def _build_workflow_parser(subparsers: argparse._SubParsersAction) -> None:
         type=int,
         default=None,
         help=(
-            "Max queued jobs (pending+running) at any time; defaults to the "
-            "workflow's max_concurrent, then $CLUSTER_MAX_JOBS, then 4"
+            "Max queued jobs (pending+running) FROM THIS WORKFLOW at any "
+            "time; defaults to the workflow's max_concurrent, then "
+            "$CLUSTER_MAX_JOBS, then 4. The account's fixed SLURM "
+            "MaxSubmit/MaxJobs limit is enforced separately and is not "
+            "controlled by this flag."
         ),
     )
     run_parser.add_argument(

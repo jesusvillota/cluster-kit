@@ -35,7 +35,13 @@ UNRESOLVED_USER = "<user>"
 
 
 def resolve_max_concurrent(plan: WorkflowPlan, cli_value: int | None) -> int:
-    """Resolve max concurrent jobs: CLI > YAML > $CLUSTER_MAX_JOBS > default."""
+    """Resolve this workflow's own concurrency cap: CLI > YAML > env > default.
+
+    Per-workflow only -- caps how many of *this run's* jobs may be queued
+    at once. The account-wide SLURM MaxSubmit/MaxJobs limit is enforced
+    separately by the orchestrator (see ``ACCOUNT_MAX_CONCURRENT_ENV_VAR``
+    in ``orchestrator.py``) and is not affected by this value.
+    """
     for candidate in (cli_value, plan.max_concurrent):
         if candidate is not None:
             return _validate_positive(candidate, "max_concurrent")
