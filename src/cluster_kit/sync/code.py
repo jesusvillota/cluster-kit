@@ -17,6 +17,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -255,8 +256,15 @@ class CodeDeployer:
 
         table.add_row(
             str(step),
+            "Provision remote environment",
+            "uv sync --frozen (when uv.lock is present)",
+        )
+        step += 1
+
+        table.add_row(
+            str(step),
             "Provision cluster_kit",
-            "Mirror local package into remote .venv (skip if no venv)",
+            "Mirror local package into remote .venv (uv projects)",
         )
         step += 1
 
@@ -440,6 +448,40 @@ class CodeDeployer:
         console.print("[green][OK][/green] Project files synced\n")
         return True
 
+    def provision_remote_uv_environment(self) -> bool:
+        """Build the remote uv environment when this project has a lockfile.
+
+        ``cluster_kit`` is intentionally excluded because the cluster cannot
+        resolve its git dependency; :meth:`provision_remote_cluster_kit`
+        mirrors the local installed package after this succeeds.
+        """
+        if not (self._local_base / "uv.lock").is_file():
+            return True
+
+        show_step_header(5, 7, "Provisioning Remote uv Environment")
+        command = (
+            f"cd {shlex.quote(str(self._remote_base))} && "
+            'export PATH="$HOME/.local/bin:$PATH" && '
+            "uv sync --frozen --no-install-package cluster-kit"
+        )
+        try:
+            result = subprocess.run(
+                ["ssh", self._ssh_host, command], capture_output=True, text=True
+            )
+        except Exception as e:
+            show_error_panel("Error provisioning remote uv environment", str(e))
+            return False
+
+        if result.returncode != 0:
+            show_error_panel(
+                "Failed to provision remote uv environment",
+                result.stderr or result.stdout,
+            )
+            return False
+
+        console.print("[green][OK][/green] Remote uv environment ready\n")
+        return True
+
     def provision_remote_worker(self) -> bool:
         """Deploy cluster-kit's packaged worker.slurm to the remote base.
 
@@ -554,7 +596,7 @@ class CodeDeployer:
         Returns:
             bool: True if provisioning succeeded or was skipped, False on error
         """
-        show_step_header(5, 6, "Provisioning cluster-kit in Remote venv")
+        show_step_header(6, 7, "Provisioning cluster-kit in Remote venv")
 
         remote_base_str = str(self._remote_base)
         probe = (
@@ -623,7 +665,7 @@ class CodeDeployer:
         Returns:
             bool: True if verification successful, False otherwise
         """
-        show_step_header(6, 6, "Verifying Deployment")
+        show_step_header(7, 7, "Verifying Deployment")
 
         remote_base_str = str(self._remote_base)
 
@@ -698,16 +740,21 @@ class CodeDeployer:
         if not self.sync_project_files():
             return False
 
+        # Step 6: Build the worktree-specific uv environment from its lockfile.
+        # Conda-flow projects have no uv.lock and retain their existing path.
+        if not self.provision_remote_uv_environment():
+            return False
+
         # Step 7: Deploy cluster-kit's own worker.slurm
         if not self.provision_remote_worker():
             return False
 
-        # Step 6: Mirror cluster_kit into the remote uv venv (skipped for
-        # conda-flow projects) — the cluster has no git to resolve the dep.
+        # Step 8: Mirror cluster_kit into the remote uv venv. The environment
+        # step above guarantees uv projects cannot silently use shared Conda.
         if not self.provision_remote_cluster_kit():
             return False
 
-        # Step 7: Verify deployment
+        # Step 9: Verify deployment
         if not self.verify_deployment():
             return False
 

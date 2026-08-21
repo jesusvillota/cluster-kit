@@ -25,6 +25,48 @@ def deployer(monkeypatch, tmp_path):
     return CodeDeployer()
 
 
+class TestProvisionRemoteUvEnvironment:
+    def test_skips_without_local_lockfile(self, deployer):
+        with patch.object(sync_code_mod.subprocess, "run") as run:
+            assert deployer.provision_remote_uv_environment() is True
+        run.assert_not_called()
+
+    def test_syncs_locked_environment(self, deployer, tmp_path):
+        (tmp_path / "uv.lock").write_text("version = 1\n")
+        ok = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with patch.object(sync_code_mod.subprocess, "run", return_value=ok) as run:
+            assert deployer.provision_remote_uv_environment() is True
+
+        assert run.call_args.args[0] == [
+            "ssh",
+            "user@cluster",
+            'cd /remote/project && export PATH="$HOME/.local/bin:$PATH" && '
+            "uv sync --frozen --no-install-package cluster-kit",
+        ]
+
+    def test_quotes_remote_base(self, deployer, tmp_path):
+        (tmp_path / "uv.lock").write_text("version = 1\n")
+        deployer._remote_base = "/remote/it's project"
+        ok = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with patch.object(sync_code_mod.subprocess, "run", return_value=ok) as run:
+            assert deployer.provision_remote_uv_environment() is True
+
+        assert "cd '/remote/it'\"'\"'s project'" in run.call_args.args[0][2]
+
+    def test_fails_when_uv_sync_fails(self, deployer, tmp_path):
+        (tmp_path / "uv.lock").write_text("version = 1\n")
+        failed = SimpleNamespace(returncode=1, stdout="uv output", stderr="")
+        with patch.object(sync_code_mod.subprocess, "run", return_value=failed):
+            assert deployer.provision_remote_uv_environment() is False
+
+    def test_fails_when_ssh_raises(self, deployer, tmp_path):
+        (tmp_path / "uv.lock").write_text("version = 1\n")
+        with patch.object(
+            sync_code_mod.subprocess, "run", side_effect=OSError("offline")
+        ):
+            assert deployer.provision_remote_uv_environment() is False
+
+
 class TestProvisionRemoteClusterKit:
     def test_skips_when_no_remote_venv(self, deployer):
         probe = SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -113,6 +155,11 @@ class TestProvisionRemoteClusterKit:
             ),
             patch.object(
                 CodeDeployer,
+                "provision_remote_uv_environment",
+                lambda self: calls.append("uv") or True,
+            ),
+            patch.object(
+                CodeDeployer,
                 "provision_remote_worker",
                 lambda self: calls.append("worker") or True,
             ),
@@ -135,10 +182,47 @@ class TestProvisionRemoteClusterKit:
             "remove",
             "sync",
             "projfiles",
+            "uv",
             "worker",
             "provision",
             "verify",
         ]
+
+    def test_deploy_stops_when_uv_provisioning_fails(self, deployer):
+        calls: list[str] = []
+        with (
+            patch.object(
+                sync_code_mod.ClusterConnection, "test_connection", return_value=True
+            ),
+            patch.object(CodeDeployer, "verify_local_directories", return_value=True),
+            patch.object(CodeDeployer, "clean_local_cache_step", return_value=0),
+            patch.object(CodeDeployer, "provision_remote_base", return_value=True),
+            patch.object(CodeDeployer, "remove_remote_directories", return_value=True),
+            patch.object(CodeDeployer, "sync_directories", return_value=True),
+            patch.object(CodeDeployer, "sync_project_files", return_value=True),
+            patch.object(
+                CodeDeployer,
+                "provision_remote_uv_environment",
+                lambda self: calls.append("uv") or False,
+            ),
+            patch.object(
+                CodeDeployer,
+                "provision_remote_worker",
+                lambda self: calls.append("worker") or True,
+            ),
+            patch.object(
+                CodeDeployer,
+                "provision_remote_cluster_kit",
+                lambda self: calls.append("package") or True,
+            ),
+            patch.object(
+                CodeDeployer,
+                "verify_deployment",
+                lambda self: calls.append("verify") or True,
+            ),
+        ):
+            assert deployer.deploy() is False
+        assert calls == ["uv"]
 
 
 class TestProvisionRemoteBase:
