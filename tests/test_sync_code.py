@@ -14,6 +14,22 @@ from cluster_kit.sync import code as sync_code_mod
 from cluster_kit.sync.code import CodeDeployer
 
 
+class FakeDeployLock:
+    calls: list[tuple[str, str]] = []
+
+    def __init__(self, *, host: str, remote_base: str, purpose: str):
+        self.host = host
+        self.remote_base = str(remote_base)
+        self.purpose = purpose
+
+    def __enter__(self):
+        self.calls.append(("enter", self.remote_base))
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.calls.append(("exit", self.remote_base))
+
+
 @pytest.fixture
 def deployer(monkeypatch, tmp_path):
     monkeypatch.setattr(sync_code_mod, "_find_project_root", lambda *a, **k: tmp_path)
@@ -173,7 +189,9 @@ class TestProvisionRemoteClusterKit:
                 "verify_deployment",
                 lambda self: calls.append("verify") or True,
             ),
+            patch.object(sync_code_mod, "RemoteDeployLock", FakeDeployLock),
         ):
+            FakeDeployLock.calls = []
             assert deployer.deploy() is True
         assert calls == [
             "local",
@@ -186,6 +204,10 @@ class TestProvisionRemoteClusterKit:
             "worker",
             "provision",
             "verify",
+        ]
+        assert FakeDeployLock.calls == [
+            ("enter", "/remote/project"),
+            ("exit", "/remote/project"),
         ]
 
     def test_deploy_stops_when_uv_provisioning_fails(self, deployer):
@@ -220,6 +242,7 @@ class TestProvisionRemoteClusterKit:
                 "verify_deployment",
                 lambda self: calls.append("verify") or True,
             ),
+            patch.object(sync_code_mod, "RemoteDeployLock", FakeDeployLock),
         ):
             assert deployer.deploy() is False
         assert calls == ["uv"]

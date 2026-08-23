@@ -45,6 +45,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from cluster_kit.config import get_cluster_host, get_remote_base, get_texlive_root
+from cluster_kit.sync.lock import deploy_lock_path
 
 __all__ = [
     "add_launcher_args",
@@ -1209,6 +1210,7 @@ def render_sbatch_argv(
     # Tell the job which deployment it belongs to, so cluster_kit inside the job
     # does not fall back to the submitting shell or to a shared .env symlink.
     env_parts["CLUSTER_REMOTE_BASE"] = remote_base
+    env_parts["CLUSTER_DEPLOY_LOCK_PATH"] = deploy_lock_path(remote_base)
     if env_vars:
         env_parts.update(env_vars)
     exports = ",".join(f"{key}={value}" for key, value in env_parts.items())

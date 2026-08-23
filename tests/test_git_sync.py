@@ -86,6 +86,22 @@ class FakeRemote:
         return SimpleNamespace(returncode=0, stdout="Updating...", stderr="")
 
 
+class FakeDeployLock:
+    calls: list[tuple[str, str]] = []
+
+    def __init__(self, *, host: str, remote_base: str, purpose: str):
+        self.host = host
+        self.remote_base = str(remote_base)
+        self.purpose = purpose
+
+    def __enter__(self):
+        self.calls.append(("enter", self.remote_base))
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.calls.append(("exit", self.remote_base))
+
+
 def _syncer(
     git: FakeGit,
     remote: FakeRemote | None = None,
@@ -197,14 +213,25 @@ class TestRemoteUpdate:
     def test_sync_success_verifies_head_match(self):
         remote = FakeRemote()
         syncer = _syncer(FakeGit(), remote)
-        with patch("cluster_kit.sync.git_sync.ensure_reachable"):
+        with (
+            patch("cluster_kit.sync.git_sync.ensure_reachable"),
+            patch("cluster_kit.sync.git_sync.RemoteDeployLock", FakeDeployLock),
+        ):
+            FakeDeployLock.calls = []
             assert syncer.sync() is True
         assert any("git pull --ff-only" in cmd for cmd in remote.commands)
+        assert FakeDeployLock.calls == [
+            ("enter", "/home/wsluser/GitHub/project"),
+            ("exit", "/home/wsluser/GitHub/project"),
+        ]
 
     def test_sync_fails_on_diverged_remote(self):
         remote = FakeRemote(fail=True)
         syncer = _syncer(FakeGit(), remote)
-        with patch("cluster_kit.sync.git_sync.ensure_reachable"):
+        with (
+            patch("cluster_kit.sync.git_sync.ensure_reachable"),
+            patch("cluster_kit.sync.git_sync.RemoteDeployLock", FakeDeployLock),
+        ):
             assert syncer.sync() is False
         # Failure path inspects the remote checkout state.
         assert any("git status" in cmd for cmd in remote.commands)
@@ -212,7 +239,10 @@ class TestRemoteUpdate:
     def test_sync_fails_on_head_mismatch(self):
         remote = FakeRemote(head="b" * 40)
         syncer = _syncer(FakeGit(head="a" * 40), remote)
-        with patch("cluster_kit.sync.git_sync.ensure_reachable"):
+        with (
+            patch("cluster_kit.sync.git_sync.ensure_reachable"),
+            patch("cluster_kit.sync.git_sync.RemoteDeployLock", FakeDeployLock),
+        ):
             assert syncer.sync() is False
 
     def test_dry_run_skips_remote_calls(self):
@@ -229,6 +259,22 @@ class TestRemoteUpdate:
         with patch(
             "cluster_kit.sync.git_sync.ensure_reachable",
             side_effect=RemoteUnreachableError("Host 'pc' unreachable"),
+        ), patch("cluster_kit.sync.git_sync.RemoteDeployLock") as lock:
+            assert syncer.sync() is False
+        lock.assert_not_called()
+        assert remote.commands == []
+
+    def test_lock_failure_aborts_before_remote_update(self):
+        from cluster_kit.sync.lock import RemoteDeployLockError
+
+        remote = FakeRemote()
+        syncer = _syncer(FakeGit(), remote)
+        with (
+            patch("cluster_kit.sync.git_sync.ensure_reachable"),
+            patch(
+                "cluster_kit.sync.git_sync.RemoteDeployLock",
+                side_effect=RemoteDeployLockError("busy"),
+            ),
         ):
             assert syncer.sync() is False
         assert remote.commands == []

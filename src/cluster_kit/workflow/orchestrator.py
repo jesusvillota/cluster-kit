@@ -32,6 +32,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -108,6 +109,50 @@ def _log(message):
 
 def _now_iso():
     return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _wait_for_deploy_lock(lock_path):
+    """Wait for any active deployment to finish before starting/submitting."""
+    if not lock_path:
+        return
+    import fcntl
+
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        _log("Waiting for deploy lock: {0}".format(lock_path))
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        _log("Deploy lock clear: {0}".format(lock_path))
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _render_shared_lock_block(lock_path, rc_path):
+    if not lock_path:
+        return ""
+    quoted_lock_dir = shlex.quote(os.path.dirname(lock_path))
+    quoted_lock_path = shlex.quote(lock_path)
+    quoted_rc_path = shlex.quote(rc_path)
+    return (
+        "mkdir -p {lock_dir}\n"
+        "exec 9>{lock_path}\n"
+        "if command -v flock >/dev/null 2>&1; then\n"
+        "    echo 'Waiting for deploy lock: {lock_path}' >&2\n"
+        "    flock -s 9\n"
+        "else\n"
+        "    echo 'ERROR: flock is required for deploy-safe workflow jobs' "
+        ">&2\n"
+        "    echo 1 > {rc_path}\n"
+        "    exit 1\n"
+        "fi\n"
+    ).format(
+        lock_dir=quoted_lock_dir,
+        lock_path=quoted_lock_path,
+        rc_path=quoted_rc_path,
+    )
 
 
 def load_plan(plan_path):
@@ -233,6 +278,7 @@ class SlurmExec:
     def __init__(self, plan, run_dir):
         self.user = plan["user"]
         self.remote_base = plan["remote_base"]
+        self.deploy_lock_path = plan.get("deploy_lock_path")
         self.max_concurrent = plan["max_concurrent"]
         self.account_max_concurrent = _account_max_concurrent()
         self._squeue_ids = None
@@ -312,6 +358,7 @@ class SlurmExec:
             os.makedirs(log_dir, exist_ok=True)
         except OSError as exc:
             _log("WARNING: could not create log dir {0}: {1}".format(log_dir, exc))
+        _wait_for_deploy_lock(self.deploy_lock_path)
         result = _run(plan_job["sbatch_argv"], cwd=self.remote_base)
         if result.returncode == 0:
             match = re.search(r"Submitted batch job (\d+)", result.stdout)
@@ -359,6 +406,7 @@ class LocalExec:
 
     def __init__(self, plan, run_dir):
         self.remote_base = plan["remote_base"]
+        self.deploy_lock_path = plan.get("deploy_lock_path")
         self.max_concurrent = plan["max_concurrent"]
         self.run_dir = run_dir
         self._procs = {}
@@ -417,12 +465,16 @@ class LocalExec:
             "echo $$ > '{pid_path}'\n"
             'export PATH="$HOME/.local/bin:$PATH"\n'
             "mkdir -p '{log_dir}'\n"
+            "{lock_block}"
             "cd '{remote_base}'\n"
             "{command} >> '{log_file}' 2>&1\n"
             "echo $? > '{rc_path}'\n"
         ).format(
             pid_path=self._pid_path(index),
             log_dir=log_dir,
+            lock_block=_render_shared_lock_block(
+                self.deploy_lock_path, self._rc_path(index)
+            ),
             remote_base=self.remote_base,
             command=plan_job["command"],
             log_file=log_file,
@@ -483,6 +535,7 @@ class LocalExec:
         index = job["index"]
         script_path = self._script_path(index)
         try:
+            _wait_for_deploy_lock(self.deploy_lock_path)
             with open(script_path, "w") as handle:
                 handle.write(self._render_script(index, plan_job))
             proc = self._spawn(script_path)

@@ -21,6 +21,7 @@ from cluster_kit.config import (
     get_remote_base,
 )
 from cluster_kit.launch.launcher import render_sbatch_argv, resolve_remote_worker
+from cluster_kit.sync.lock import deploy_lock_path
 from cluster_kit.workflow.runner import WorkflowError, WorkflowJob, WorkflowPlan
 
 SCHEMA_VERSION = 2
@@ -162,6 +163,7 @@ def build_execution_plan(
         "created_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "user": user,
         "remote_base": remote_base,
+        "deploy_lock_path": deploy_lock_path(remote_base),
         "executor": executor,
         "dependency_mode": plan.dependency,
         "max_concurrent": resolve_max_concurrent(plan, max_concurrent),

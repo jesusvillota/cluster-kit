@@ -32,6 +32,7 @@ from rich.console import Console
 from rich.prompt import Prompt
 
 from cluster_kit.config import ClusterConfig, load_config
+from cluster_kit.sync.lock import RemoteDeployLock, RemoteDeployLockError
 from cluster_kit.utils.ssh import (
     RemoteUnreachableError,
     ensure_reachable,
@@ -229,26 +230,37 @@ class GitSyncer:
             _console.print(f"[red][FAIL][/red] {exc}")
             return False
 
-        result = self._remote(command)
-        if result.returncode != 0:
-            base = shlex.quote(str(self.config.remote_base))
-            status = self._remote(f"cd {base} && git status --short --branch")
-            _console.print(
-                f"[red][FAIL][/red] remote update failed:\n"
-                f"{result.stderr.strip()}\n"
-                f"[yellow]Remote checkout state:[/yellow]\n"
-                f"{status.stdout.strip()}\n"
-                "Resolve on the remote machine, or rerun with --force to "
-                f"reset it to origin/{branch} (uncommitted remote work is "
-                "lost; untracked files survive)."
-            )
-            return False
-        if self.verbose and result.stdout.strip():
-            _console.print(result.stdout.strip())
+        try:
+            with RemoteDeployLock(
+                host=self.config.host,
+                remote_base=self.config.remote_base,
+                purpose="git sync",
+            ):
+                result = self._remote(command)
+                if result.returncode != 0:
+                    base = shlex.quote(str(self.config.remote_base))
+                    status = self._remote(f"cd {base} && git status --short --branch")
+                    _console.print(
+                        f"[red][FAIL][/red] remote update failed:\n"
+                        f"{result.stderr.strip()}\n"
+                        f"[yellow]Remote checkout state:[/yellow]\n"
+                        f"{status.stdout.strip()}\n"
+                        "Resolve on the remote machine, or rerun with --force to "
+                        f"reset it to origin/{branch} (uncommitted remote work is "
+                        "lost; untracked files survive)."
+                    )
+                    return False
+                if self.verbose and result.stdout.strip():
+                    _console.print(result.stdout.strip())
 
-        local_sha = self._git("rev-parse", "HEAD").stdout.strip()
-        base = shlex.quote(str(self.config.remote_base))
-        remote_sha = self._remote(f"cd {base} && git rev-parse HEAD").stdout.strip()
+                local_sha = self._git("rev-parse", "HEAD").stdout.strip()
+                base = shlex.quote(str(self.config.remote_base))
+                remote_sha = self._remote(
+                    f"cd {base} && git rev-parse HEAD"
+                ).stdout.strip()
+        except RemoteDeployLockError as exc:
+            _console.print(f"[red][FAIL][/red] deployment lock unavailable: {exc}")
+            return False
         if local_sha and local_sha == remote_sha:
             _console.print(
                 f"[green][OK][/green] Remote clone at [bold]{branch}[/bold] "
