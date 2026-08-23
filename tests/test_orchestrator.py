@@ -16,6 +16,7 @@ from cluster_kit.workflow import orchestrator as orch
 
 def make_plan(deps_by_job: list[list[int]], **overrides) -> dict:
     executor = overrides.pop("executor", "slurm")
+    deploy_lock_path = overrides.pop("deploy_lock_path", None)
     jobs = []
     for index, deps in enumerate(deps_by_job):
         job = {
@@ -37,6 +38,7 @@ def make_plan(deps_by_job: list[list[int]], **overrides) -> dict:
         "created_at": "2026-06-11T12:00:00+02:00",
         "user": "testuser",
         "remote_base": "/remote/base",
+        "deploy_lock_path": deploy_lock_path,
         "executor": executor,
         "dependency_mode": "afterok",
         "max_concurrent": 4,
@@ -205,6 +207,20 @@ def test_no_submission_when_queue_at_limit(slurm: FakeSlurm, tmp_path: Path) -> 
 
     assert slurm.submitted_argvs == []
     assert _job(state, 0)["state"] == orch.WAITING
+
+
+def test_slurm_submission_waits_for_deploy_lock(
+    slurm: FakeSlurm, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = make_plan([[]], deploy_lock_path="/remote/base/.cluster_kit/deploy.lock")
+    waited: list[str] = []
+    monkeypatch.setattr(orch, "_wait_for_deploy_lock", waited.append)
+
+    state, _, ex = _slurm_setup(plan, tmp_path)
+    orch.run_cycle(plan, state, ex)
+
+    assert waited == ["/remote/base/.cluster_kit/deploy.lock"]
+    assert len(slurm.submitted_argvs) == 1
 
 
 def test_workflow_limit_does_not_count_foreign_jobs(
@@ -516,7 +532,11 @@ def test_local_resume_tracks_jobs_via_rc_files(tmp_path: Path) -> None:
 
 
 def test_local_script_rendering(tmp_path: Path) -> None:
-    plan = make_plan([[]], executor="ssh")
+    plan = make_plan(
+        [[]],
+        executor="ssh",
+        deploy_lock_path="/remote/base/.cluster_kit/deploy.lock",
+    )
     ex = orch.LocalExec(plan, str(tmp_path))
 
     script = ex._render_script(0, plan["jobs"][0])
@@ -526,6 +546,8 @@ def test_local_script_rendering(tmp_path: Path) -> None:
     assert f"echo $? > '{tmp_path}/job_0.rc'" in script
     assert 'export PATH="$HOME/.local/bin:$PATH"' in script
     assert "_logs_/workflows/test/stage/job0.log" in script
+    assert "flock -s 9" in script
+    assert "/remote/base/.cluster_kit/deploy.lock" in script
 
 
 def test_make_executor_dispatch(tmp_path: Path) -> None:

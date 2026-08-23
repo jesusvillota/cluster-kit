@@ -23,6 +23,22 @@ from cluster_kit.workflow.plan import (
 REMOTE_BASE = "/remote/base"
 
 
+class _FakeDeployLock:
+    calls: list[tuple[str, str]] = []
+
+    def __init__(self, *, host: str, remote_base: str, purpose: str):
+        self.host = host
+        self.remote_base = remote_base
+        self.purpose = purpose
+
+    def __enter__(self):
+        self.calls.append(("enter", self.remote_base))
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.calls.append(("exit", self.remote_base))
+
+
 def _write_workflow(tmp_path: Path, content: str, *, worker: bool = True) -> Path:
     path = tmp_path / "workflow.yaml"
     path.write_text(content)
@@ -366,7 +382,9 @@ stages:
     assert "--job-name=panel" in argv
     assert "--output=_logs_/workflows/demo/build/%x_%j.out" in argv
     assert (
-        f"--export=ALL,PROJECT_DIR={REMOTE_BASE},CLUSTER_REMOTE_BASE={REMOTE_BASE}"
+        f"--export=ALL,PROJECT_DIR={REMOTE_BASE},"
+        f"CLUSTER_REMOTE_BASE={REMOTE_BASE},"
+        f"CLUSTER_DEPLOY_LOCK_PATH={REMOTE_BASE}/.cluster_kit/deploy.lock"
         in argv
     )
     assert not any(arg.startswith("--dependency") for arg in argv)
@@ -376,7 +394,9 @@ stages:
     plot_argv = plot_job["sbatch_argv"]
     assert (
         f"--export=ALL,TEXLIVE=1,PROJECT_DIR={REMOTE_BASE},"
-        f"CLUSTER_REMOTE_BASE={REMOTE_BASE}" in plot_argv
+        f"CLUSTER_REMOTE_BASE={REMOTE_BASE},"
+        f"CLUSTER_DEPLOY_LOCK_PATH={REMOTE_BASE}/.cluster_kit/deploy.lock"
+        in plot_argv
     )
 
 
@@ -501,14 +521,56 @@ jobs:
 
     with (
         _patch_config(),
+        patch("cluster_kit.config.get_cluster_host", return_value="user@cluster"),
+        patch("cluster_kit.sync.lock.RemoteDeployLock", _FakeDeployLock),
         patch("cluster_kit.workflow.remote.launch_orchestrator", fake_launch),
     ):
+        _FakeDeployLock.calls = []
         run_id = submit_workflow(workflow)
 
     assert len(launched) == 1
     assert run_id == launched[0]["run_id"]
     assert run_id.startswith("launch-demo_")
     assert len(launched[0]["jobs"]) == 1
+    assert launched[0]["deploy_lock_path"] == f"{REMOTE_BASE}/.cluster_kit/deploy.lock"
+    assert _FakeDeployLock.calls == [("enter", REMOTE_BASE), ("exit", REMOTE_BASE)]
+
+
+def test_submit_workflow_no_sync_launches_inside_deploy_lock(tmp_path: Path) -> None:
+    workflow = _write_workflow(
+        tmp_path,
+        '''
+name: lock-demo
+sync: false
+
+jobs:
+  - command: |
+      uv run src/a.py --run-from cluster
+''',
+    )
+    calls: list[str] = []
+
+    class Lock(_FakeDeployLock):
+        def __enter__(self):
+            calls.append(f"lock:{self.remote_base}")
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            calls.append("unlock")
+
+    def fake_launch(exec_plan: dict) -> str:
+        calls.append("launch")
+        return "run-dir"
+
+    with (
+        _patch_config(),
+        patch("cluster_kit.config.get_cluster_host", return_value="user@cluster"),
+        patch("cluster_kit.sync.lock.RemoteDeployLock", Lock),
+        patch("cluster_kit.workflow.remote.launch_orchestrator", fake_launch),
+    ):
+        submit_workflow(workflow)
+
+    assert calls == [f"lock:{REMOTE_BASE}", "launch", "unlock"]
 
 
 def test_submit_workflow_syncs_before_launch(tmp_path: Path) -> None:
@@ -592,12 +654,14 @@ jobs:
         _patch_config(),
         patch("cluster_kit.workflow.remote.launch_orchestrator") as launch,
         patch("cluster_kit.workflow.runner.CodeDeployer") as deployer,
+        patch("cluster_kit.sync.lock.RemoteDeployLock") as lock,
     ):
         result = submit_workflow(workflow, dry_run=True)
 
     assert result == "dry-run"
     launch.assert_not_called()
     deployer.assert_not_called()
+    lock.assert_not_called()
 
 
 def test_dry_run_works_without_cluster_config(tmp_path: Path) -> None:

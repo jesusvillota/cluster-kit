@@ -179,6 +179,7 @@ def test_fan_out_submits_one_job_per_value(tmp_path: Path) -> None:
         assert "/remote/proj/.cluster_kit/worker.slurm" in cmd
         assert "PROJECT_DIR=/remote/proj" in cmd
         assert "CLUSTER_REMOTE_BASE=/remote/proj" in cmd
+        assert "CLUSTER_DEPLOY_LOCK_PATH=/remote/proj/.cluster_kit/deploy.lock" in cmd
     # No SLURM array involved.
     assert not any("--array" in cmd for cmd in submitted)
 

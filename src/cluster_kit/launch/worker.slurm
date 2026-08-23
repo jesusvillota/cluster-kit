@@ -36,6 +36,22 @@ PROJECT_DIR="${PROJECT_DIR:?PROJECT_DIR not exported by the launcher}"
 export CLUSTER_KIT_JOB=1
 export CLUSTER_REMOTE_BASE="${CLUSTER_REMOTE_BASE:-$PROJECT_DIR}"
 
+# Hold a shared deployment lock for the full job lifetime. Code deploys take
+# the same lock exclusively before replacing src/ and runnables/, so a compute
+# job can never start while the deployment tree is being rewritten.
+if [[ -n "${CLUSTER_DEPLOY_LOCK_PATH:-}" ]]; then
+    mkdir -p "$(dirname "$CLUSTER_DEPLOY_LOCK_PATH")"
+    exec 9>"$CLUSTER_DEPLOY_LOCK_PATH"
+    if command -v flock >/dev/null 2>&1; then
+        echo "Waiting for deploy lock: ${CLUSTER_DEPLOY_LOCK_PATH}"
+        flock -s 9
+        echo "Deploy lock acquired"
+    else
+        echo "ERROR: flock is required for deploy-safe workflow jobs" >&2
+        exit 1
+    fi
+fi
+
 # uv installs to ~/.local/bin, which non-interactive sbatch shells do not have
 # on PATH (no .bashrc is sourced). Harmless when the runtime is conda.
 export PATH="$HOME/.local/bin:$PATH"

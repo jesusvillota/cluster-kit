@@ -221,7 +221,10 @@ def submit_workflow(
     from cluster_kit.workflow.remote import RemoteError, launch_orchestrator
 
     try:
-        run_dir = launch_orchestrator(exec_plan)
+        if plan.sync:
+            run_dir = launch_orchestrator(exec_plan)
+        else:
+            run_dir = _launch_orchestrator_after_deploy_lock(exec_plan)
     except RemoteError as exc:
         raise WorkflowError(str(exc)) from exc
 
@@ -246,6 +249,23 @@ def _sync_before_submit(project_root: Path) -> bool:
     deployer = CodeDeployer(dry_run=False, verbose=False)
     deployer._local_base = project_root
     return deployer.deploy()
+
+
+def _launch_orchestrator_after_deploy_lock(exec_plan: dict[str, Any]) -> str:
+    """Launch a no-sync workflow only after any active deploy has finished."""
+    from cluster_kit.config import get_cluster_host
+    from cluster_kit.sync.lock import RemoteDeployLock, RemoteDeployLockError
+    from cluster_kit.workflow.remote import launch_orchestrator
+
+    try:
+        with RemoteDeployLock(
+            host=get_cluster_host(),
+            remote_base=exec_plan["remote_base"],
+            purpose="workflow launch",
+        ):
+            return launch_orchestrator(exec_plan)
+    except RemoteDeployLockError as exc:
+        raise WorkflowError(f"deployment lock unavailable: {exc}") from exc
 
 
 def _parse_stages(

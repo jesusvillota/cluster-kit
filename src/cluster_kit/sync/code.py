@@ -34,6 +34,7 @@ from cluster_kit.config import (
     get_remote_base,
 )
 from cluster_kit.launch import get_worker_template
+from cluster_kit.sync.lock import RemoteDeployLock, RemoteDeployLockError
 from cluster_kit.utils import (
     ClusterConnection,
     PythonCacheCleaner,
@@ -710,6 +711,19 @@ class CodeDeployer:
             self.show_dry_run_summary()
             return True
 
+        try:
+            with RemoteDeployLock(
+                host=self._ssh_host,
+                remote_base=self._remote_base,
+                purpose="code deploy",
+            ):
+                return self._deploy_locked()
+        except RemoteDeployLockError as exc:
+            show_error_panel("Failed to acquire deployment lock", str(exc))
+            return False
+
+    def _deploy_locked(self) -> bool:
+        """Execute deployment after the remote-base deploy lock is held."""
         # Step 1: Test connection
         show_step_header(1, 6, "Testing Cluster Connection")
         if not ClusterConnection.test_connection(verbose=True):
