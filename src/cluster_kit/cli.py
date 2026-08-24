@@ -314,6 +314,24 @@ def _cmd_workflow_run(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def _cmd_workflow_run_local(args: argparse.Namespace) -> None:
+    """Run a YAML/TOML-defined workflow foreground on this machine."""
+    from pathlib import Path
+
+    from cluster_kit.workflow import WorkflowError, run_local_workflow
+
+    try:
+        exit_code = run_local_workflow(
+            Path(args.workflow_file),
+            dry_run=args.dry_run,
+            project_root=args.project_root,
+        )
+    except WorkflowError as exc:
+        print(f"[cluster-kit] Workflow error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    sys.exit(exit_code)
+
+
 def _cmd_workflow_status(args: argparse.Namespace) -> None:
     """Show the state of an orchestrated workflow run."""
     from cluster_kit.workflow import show_status
@@ -1208,6 +1226,27 @@ def _build_workflow_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Orchestrator poll interval in seconds (default: 30)",
     )
     run_parser.set_defaults(func=_cmd_workflow_run)
+
+    run_local_parser = workflow_sub.add_parser(
+        "run-local",
+        help="Run a workflow file foreground on this machine",
+    )
+    run_local_parser.add_argument(
+        "workflow_file",
+        help="Path to the workflow file",
+    )
+    run_local_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Validate and print the local execution plan without running jobs",
+    )
+    run_local_parser.add_argument(
+        "--project-root",
+        default=None,
+        help="Override the local workflow project root",
+    )
+    run_local_parser.set_defaults(func=_cmd_workflow_run_local)
 
     status_parser = workflow_sub.add_parser(
         "status",

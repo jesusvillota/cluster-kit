@@ -223,6 +223,21 @@ class TestWorkflowParser:
         assert args.dependency == "afterany"
         assert args.worker_script == "runnables/slurm/custom_worker.slurm"
 
+    def test_workflow_run_local_options(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "workflow",
+            "run-local",
+            "workflow.yaml",
+            "--dry-run",
+            "--project-root",
+            "/tmp/project",
+        ])
+        assert args.workflow_command == "run-local"
+        assert args.workflow_file == "workflow.yaml"
+        assert args.dry_run is True
+        assert args.project_root == "/tmp/project"
+
     def test_workflow_invalid_dependency_exits(self):
         parser = build_parser()
         with pytest.raises(SystemExit):

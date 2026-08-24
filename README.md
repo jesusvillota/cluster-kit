@@ -293,6 +293,27 @@ stages:
 | `--max-concurrent` | file → `$CLUSTER_MAX_JOBS` → 4 | Max queued jobs at any time |
 | `--poll-interval` | file → 30 | Orchestrator poll cadence (seconds) |
 
+### `workflow run-local`
+
+Run a YAML/TOML workflow foreground on the current machine, from the current
+checkout. This is for local PC workflows where you want a simple sequential
+runner and live terminal output, not a detached orchestrator.
+
+```bash
+cluster-kit workflow run-local workflows/stock_data_processing_local.yaml
+cluster-kit workflow run-local workflows/stock_data_processing_local.yaml --dry-run
+cluster-kit workflow run-local workflows/stock_data_processing_local.yaml --project-root ~/GitHub/jmp
+```
+
+`run-local` supports top-level `jobs:` as a sequential chain and `stages:` with
+exactly one job per stage. Unlike remote `workflow run`, local workflow commands
+are raw shell commands, so setup such as `export PATH="$HOME/.local/bin:$PATH"
+&& uv run ...` is valid. On the first nonzero command exit, execution stops and
+the CLI exits nonzero.
+
+Use `cluster-kit -p pc workflow run ...` instead when the workflow should run
+detached on a configured PC over SSH and be monitored with `workflow status`.
+
 ### `serve`
 
 Manage a ttyd server for remote phone access to the cluster TUI.

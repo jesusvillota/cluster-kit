@@ -58,7 +58,11 @@ def resolve_phone_ttyd_index_path() -> Path | None:
     package, fall back to the legacy ~/.cache copy. Returns None if neither exists."""
     try:
         packaged = Path(
-            str(importlib.resources.files("cluster_kit.tui") / "assets" / "phone-ttyd.html")
+            str(
+                importlib.resources.files("cluster_kit.tui")
+                / "assets"
+                / "phone-ttyd.html"
+            )
         )
         if packaged.is_file():
             return packaged
