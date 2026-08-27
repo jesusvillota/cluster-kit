@@ -33,7 +33,6 @@ from cluster_kit.config import (
     get_cluster_host,
     get_remote_base,
 )
-from cluster_kit.launch import get_worker_template
 from cluster_kit.sync.lock import RemoteDeployLock, RemoteDeployLockError
 from cluster_kit.utils import (
     ClusterConnection,
@@ -493,6 +492,8 @@ class CodeDeployer:
         Returns:
             bool: True if successful, False otherwise
         """
+        from cluster_kit.launch import get_worker_template
+
         template = get_worker_template()
         if not template.is_file():
             show_error_panel(
