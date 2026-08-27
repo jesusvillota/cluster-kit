@@ -29,6 +29,8 @@ COLUMNS = (
     "REASON",
 )
 
+COLUMN_WIDTHS = (10, 30, 12, 20, 8, 10, 6, 6, 10, 6, 24)
+
 _PLACEHOLDER_ROW_KEY = "__no_jobs__"
 
 
@@ -59,8 +61,13 @@ class QueueTable(Widget):
         self._is_adjusting_cursor = False
 
     def compose(self):  # type: ignore[override]
-        table: DataTable[Text] = DataTable(cursor_type="row", id="queue_data_table")
-        table.add_columns(*COLUMNS)
+        table: DataTable[Text] = DataTable(
+            cursor_type="row",
+            fixed_columns=2,
+            id="queue_data_table",
+        )
+        for label, width in zip(COLUMNS, COLUMN_WIDTHS):
+            table.add_column(label, width=width)
         yield table
 
     def on_mount(self) -> None:
@@ -122,9 +129,6 @@ class QueueTable(Widget):
         if not self._is_selectable_row(cursor_row):
             return None
         return self._jobs[cursor_row]
-
-    def set_loading(self, value: bool) -> None:
-        self.query_one(DataTable).loading = value
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         """Keep the row cursor on jobs owned by the configured selectable user."""

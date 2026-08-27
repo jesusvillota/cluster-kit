@@ -226,6 +226,15 @@ def parse_sinfo_output(raw: str) -> list[AvailableResourceRow]:
 def fetch_available_resources() -> list[AvailableResourceRow]:
     """Fetch fixed-node availability via sinfo and fall back safely on errors."""
 
+    result = run_ssh_command(build_sinfo_command())
+    if not result.success:
+        return [_failure_row(node_name) for node_name in TARGET_NODE_NAMES]
+    return parse_sinfo_output(result.stdout)
+
+
+def build_sinfo_command() -> str:
+    """Build the delimiter-safe sinfo command used by resource fetchers."""
+
     node_list = ",".join(TARGET_NODE_NAMES)
     command = [
         "sinfo",
@@ -235,10 +244,7 @@ def fetch_available_resources() -> list[AvailableResourceRow]:
         f"--nodes={node_list}",
         f"--Format=NodeHost:{FIELD_DELIMITER},StateComplete:{FIELD_DELIMITER},CPUsState:{FIELD_DELIMITER},AllocMem:{FIELD_DELIMITER},GresUsed",
     ]
-    result = run_ssh_command(shlex.join(command))
-    if not result.success:
-        return [_failure_row(node_name) for node_name in TARGET_NODE_NAMES]
-    return parse_sinfo_output(result.stdout)
+    return shlex.join(command)
 
 
 __all__ = [
@@ -246,6 +252,7 @@ __all__ = [
     "FIELD_DELIMITER",
     "FIXED_NODE_TOTALS",
     "TARGET_NODE_NAMES",
+    "build_sinfo_command",
     "fetch_available_resources",
     "parse_sinfo_output",
 ]

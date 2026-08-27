@@ -21,6 +21,8 @@ class _DesktopLogApp(App[None]):
 
 
 class _PhoneShellApp(PhoneClusterTUI):
+    AUTO_START_REFRESH = False
+
     def on_mount(self) -> None:
         self.viewed_logs = False
         self._set_active_view("queue")

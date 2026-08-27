@@ -95,6 +95,9 @@ def test_queue_table_dims_non_owned_rows_and_selects_first_owned_job() -> None:
 
             assert isinstance(first_cell, Text)
             assert str(first_cell.style) == "grey62"
+            assert table.fixed_columns == 2
+            assert table.zebra_stripes is False
+            assert table.loading is False
             assert table.cursor_row == 1
             assert widget.get_selected_job() == _make_job("17022", "j-vill36")
 

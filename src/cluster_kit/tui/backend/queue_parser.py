@@ -237,6 +237,16 @@ def fetch_queue(
 ) -> SSHResult:
     """Fetch the cluster queue via SSH."""
 
+    return run_ssh_command(build_squeue_command(user=user, job_id=job_id, state=state))
+
+
+def build_squeue_command(
+    user: str | None = None,
+    job_id: str | None = None,
+    state: str | None = None,
+) -> str:
+    """Build the delimiter-safe squeue command used by queue fetchers."""
+
     command = ["squeue"]
     if user:
         command.extend(["-u", user])
@@ -246,4 +256,4 @@ def fetch_queue(
         command.extend([f"--states={state}"])
     command.append("--noheader")
     command.append(f"--Format={DEFAULT_SQUEUE_FORMAT}")
-    return run_ssh_command(shlex.join(command))
+    return shlex.join(command)

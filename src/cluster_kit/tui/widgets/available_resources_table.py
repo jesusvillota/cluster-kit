@@ -51,6 +51,8 @@ class _PhoneResourceSummary:
 class AvailableResourcesTable(Widget):
     """A Textual widget that wraps DataTable for node availability display."""
 
+    can_focus = False
+
     DEFAULT_CSS = """
     AvailableResourcesTable {
         height: 1fr;
@@ -71,7 +73,12 @@ class AvailableResourcesTable(Widget):
                 yield Static("", id="available_resources_cards_body")
             return
 
-        table: DataTable[str] = DataTable(id="available_resources_data_table")
+        table: DataTable[str] = DataTable(
+            cursor_type="none",
+            show_cursor=False,
+            id="available_resources_data_table",
+        )
+        table.can_focus = False
         table.add_columns(*COLUMNS)
         yield table
 

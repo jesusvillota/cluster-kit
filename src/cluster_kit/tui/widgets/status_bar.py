@@ -5,6 +5,18 @@ from datetime import datetime
 from textual.widgets import Static
 
 _STATUS_CLASSES = ("connected", "stale", "error")
+_MAX_ERROR_LENGTH = 120
+
+
+def _concise_error(message: str | None) -> str:
+    if not message:
+        return "unknown error"
+    first_line = next(
+        (line.strip() for line in message.splitlines() if line.strip()), ""
+    )
+    if len(first_line) <= _MAX_ERROR_LENGTH:
+        return first_line or "unknown error"
+    return f"{first_line[: _MAX_ERROR_LENGTH - 1]}…"
 
 
 class ConnectionStatus(Static):
@@ -23,9 +35,46 @@ class ConnectionStatus(Static):
             self._set_state("error")
             self.update(f"✗ Disconnected · {job_count} jobs · {time_str}")
 
-    def mark_stale(self) -> None:
+    def mark_refreshing(
+        self, last_refresh: datetime | None, job_count: int
+    ) -> None:
+        self._set_state(None)
+        if last_refresh is None:
+            self.update("↻ Connecting…")
+            return
+        self.update(
+            f"↻ Refreshing · showing {job_count} jobs from "
+            f"{last_refresh.strftime('%H:%M:%S')}"
+        )
+
+    def mark_partial(
+        self,
+        label: str,
+        message: str | None,
+        job_count: int,
+        refreshed_at: datetime,
+    ) -> None:
         self._set_state("stale")
-        self.update("⚠ Data may be stale")
+        self.update(
+            f"⚠ {label}: {_concise_error(message)} · {job_count} jobs updated "
+            f"{refreshed_at.strftime('%H:%M:%S')}"
+        )
+
+    def mark_stale(
+        self,
+        message: str | None = None,
+        last_refresh: datetime | None = None,
+        job_count: int = 0,
+    ) -> None:
+        self._set_state("error")
+        detail = _concise_error(message)
+        if last_refresh is None:
+            self.update(f"✗ Cluster unavailable: {detail}")
+            return
+        self.update(
+            f"⚠ Queue stale: {detail} · showing {job_count} jobs from "
+            f"{last_refresh.strftime('%H:%M:%S')}"
+        )
 
     def mark_connected(self) -> None:
         self._set_state("connected")

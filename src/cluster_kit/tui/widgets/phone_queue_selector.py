@@ -19,7 +19,6 @@ from ..ownership import user_matches_allowed_owner  # noqa: E402
 
 _RUNNING_OR_COMPLETING_STATES = {"R", "RUNNING", "CG", "COMPLETING"}
 _EMPTY_MESSAGE = "No jobs in queue. Refresh to load active jobs."
-_REFRESHING_MESSAGE = "Refreshing queue…"
 _NON_SELECTABLE_JOB_STYLE = "grey62"
 
 
@@ -69,7 +68,6 @@ class PhoneQueueSelector(Widget):
         self._jobs: list[JobInfo] = []
         self._jobs_by_id: dict[str, JobInfo] = {}
         self._selected_job_id: str | None = None
-        self._loading = False
         self._has_jobs = False
         self._allowed_user = ""
         self._is_adjusting_highlight = False
@@ -84,7 +82,6 @@ class PhoneQueueSelector(Widget):
     def refresh_data(
         self, jobs: list[JobInfo], current_user: str = ""
     ) -> None:
-        self._loading = False
         previous_selected_job_id = self._selected_job_id
         self._jobs = list(jobs)
         self._jobs_by_id = {job.job_id: job for job in self._jobs}
@@ -119,18 +116,6 @@ class PhoneQueueSelector(Widget):
 
         selected_index = self._selected_index()
         self._set_highlight(selected_index)
-
-    def set_loading(self, value: bool) -> None:
-        self._loading = value
-        if self._jobs:
-            return
-
-        empty_message = _REFRESHING_MESSAGE if value else _EMPTY_MESSAGE
-        self._render_empty_state(empty_message)
-        option_list = self.query_one(OptionList)
-        option_list.clear_options()
-        option_list.add_options([self._make_placeholder_option(empty_message)])
-        option_list.highlighted = None
 
     def get_selected_job(self) -> SelectedJob | None:
         if self._selected_job_id is None:

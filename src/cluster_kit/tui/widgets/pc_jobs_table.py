@@ -11,6 +11,7 @@ from textual.widget import Widget
 from textual.widgets import DataTable, Static
 
 COLUMNS = ("NAME", "STATE", "CREATED", "RC", "JOB_ID")
+COLUMN_WIDTHS = (28, 12, 24, 6, 28)
 
 _STATE_STYLES = {
     "RUNNING": "green",
@@ -48,8 +49,11 @@ class PcJobsTable(Widget):
                 yield Static("", id="pc_jobs_cards_body")
             return
 
-        table: DataTable[str] = DataTable(id="pc_jobs_data_table")
-        table.add_columns(*COLUMNS)
+        table: DataTable[str] = DataTable(
+            id="pc_jobs_data_table",
+        )
+        for label, width in zip(COLUMNS, COLUMN_WIDTHS):
+            table.add_column(label, width=width)
         yield table
 
     def refresh_data(self, jobs: list[dict], error: str | None) -> None:

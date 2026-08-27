@@ -9,6 +9,7 @@ from cluster_kit.tui.backend.available_resources import (
 from cluster_kit.tui.backend.job_actions import SSHResult
 from cluster_kit.tui.backend.log_discovery import LogFile
 from cluster_kit.tui.backend.queue_parser import JobInfo
+from cluster_kit.tui.backend.snapshot import ClusterSnapshotResult
 from cluster_kit.tui.ownership import user_matches_allowed_owner
 
 
@@ -29,22 +30,17 @@ class SelectedJob:
 
 
 @dataclass(frozen=True)
-class RefreshSuccess:
-    """Successful queue refresh payload."""
+class RefreshOutcome:
+    """Possibly partial cluster refresh; ``None`` means retain prior data."""
 
-    jobs: list[JobInfo]
-    availability_rows: list[AvailableResourceRow]
+    jobs: list[JobInfo] | None
+    availability_rows: list[AvailableResourceRow] | None
+    queue_error: str | None = None
+    resources_error: str | None = None
 
     @property
-    def job_count(self) -> int:
-        return len(self.jobs)
-
-
-@dataclass(frozen=True)
-class RefreshFailure:
-    """Failed queue refresh payload preserving non-queue state."""
-
-    availability_rows: list[AvailableResourceRow]
+    def fully_successful(self) -> bool:
+        return self.jobs is not None and self.availability_rows is not None
 
 
 @dataclass(frozen=True)
@@ -61,17 +57,17 @@ class ClusterTUIController:
     def __init__(
         self,
         *,
-        fetch_queue: Callable[..., SSHResult],
+        fetch_cluster_snapshot: Callable[..., ClusterSnapshotResult],
         parse_squeue_output: Callable[[str], list[JobInfo]],
-        fetch_available_resources: Callable[[], list[AvailableResourceRow]],
+        parse_sinfo_output: Callable[[str], list[AvailableResourceRow]],
         discover_log_files: Callable[[str], SSHResult],
         parse_log_files: Callable[[str], list[LogFile]],
         cancel_job: Callable[..., SSHResult],
         sync_screen_factory: Callable[..., Any],
     ) -> None:
-        self._fetch_queue = fetch_queue
+        self._fetch_cluster_snapshot = fetch_cluster_snapshot
         self._parse_squeue_output = parse_squeue_output
-        self._fetch_available_resources = fetch_available_resources
+        self._parse_sinfo_output = parse_sinfo_output
         self._discover_log_files = discover_log_files
         self._parse_log_files = parse_log_files
         self._cancel_job = cancel_job
@@ -82,13 +78,35 @@ class ClusterTUIController:
         *,
         all_users: bool,
         cluster_user: str,
-    ) -> RefreshSuccess | RefreshFailure:
-        result = self._fetch_queue(user=None if all_users else cluster_user)
-        availability_rows = self._fetch_available_resources()
-        if result.success:
-            jobs = self._parse_squeue_output(result.stdout)
-            return RefreshSuccess(jobs=jobs, availability_rows=availability_rows)
-        return RefreshFailure(availability_rows=availability_rows)
+    ) -> RefreshOutcome:
+        snapshot = self._fetch_cluster_snapshot(
+            user=None if all_users else cluster_user
+        )
+
+        jobs: list[JobInfo] | None = None
+        queue_error = snapshot.queue.error_message or None
+        if snapshot.queue.success:
+            try:
+                jobs = self._parse_squeue_output(snapshot.queue.stdout)
+            except Exception as exc:
+                queue_error = f"Queue parse failed: {exc}"
+
+        availability_rows: list[AvailableResourceRow] | None = None
+        resources_error = snapshot.resources.error_message or None
+        if snapshot.resources.success:
+            try:
+                availability_rows = self._parse_sinfo_output(
+                    snapshot.resources.stdout
+                )
+            except Exception as exc:
+                resources_error = f"Resource parse failed: {exc}"
+
+        return RefreshOutcome(
+            jobs=jobs,
+            availability_rows=availability_rows,
+            queue_error=queue_error,
+            resources_error=resources_error,
+        )
 
     @staticmethod
     def require_selected_job(
@@ -132,7 +150,6 @@ class ClusterTUIController:
 __all__ = [
     "ClusterTUIController",
     "LogRoute",
-    "RefreshFailure",
-    "RefreshSuccess",
+    "RefreshOutcome",
     "SelectedJob",
 ]

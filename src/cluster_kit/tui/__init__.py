@@ -18,8 +18,7 @@ _EXPORTS = {
         "ClusterTUIController",
     ),
     "LogRoute": ("cluster_kit.tui.controller", "LogRoute"),
-    "RefreshFailure": ("cluster_kit.tui.controller", "RefreshFailure"),
-    "RefreshSuccess": ("cluster_kit.tui.controller", "RefreshSuccess"),
+    "RefreshOutcome": ("cluster_kit.tui.controller", "RefreshOutcome"),
     "SelectedJob": ("cluster_kit.tui.controller", "SelectedJob"),
     "AvailableResourcesTable": (
         "cluster_kit.tui.widgets",
