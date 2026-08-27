@@ -9,8 +9,6 @@ Public API:
     - get_worker_template: Return Path to the generic worker.slurm template
 """
 
-from pathlib import Path
-
 from cluster_kit.launch.launcher import (
     add_launcher_args,
     maybe_launch,
@@ -18,14 +16,7 @@ from cluster_kit.launch.launcher import (
     submit_command,
     submit_job,
 )
-
-_WORKER_TEMPLATE = Path(__file__).parent / "worker.slurm"
-
-
-def get_worker_template() -> Path:
-    """Return the path to the generic worker.slurm template."""
-    return _WORKER_TEMPLATE
-
+from cluster_kit.launch.worker import get_worker_template
 
 __all__ = [
     "add_launcher_args",
